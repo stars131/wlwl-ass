@@ -78,6 +78,14 @@ fn find_free_port() -> anyhow::Result<u16> {
 }
 
 fn which_python() -> anyhow::Result<PathBuf> {
+    if let Ok(path) = std::env::var("WLWL_PYTHON") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Ok(path);
+        }
+        bail!("WLWL_PYTHON is set but does not point to a file: {}", path.display());
+    }
+
     let candidates = if cfg!(windows) {
         vec!["py", "python", "python3"]
     } else {
@@ -111,6 +119,17 @@ fn wait_for_ready(child: &mut Child) -> anyhow::Result<()> {
 /// Walk up from the current exe location until we find a directory with both
 /// `launcher/api_server.py` and `agentmain.py`. Falls back to CWD in dev.
 pub fn resolve_project_root() -> anyhow::Result<PathBuf> {
+    if let Ok(root) = std::env::var("WLWL_PROJECT_ROOT") {
+        let root = PathBuf::from(root);
+        if root.join("launcher").join("api_server.py").exists() {
+            return Ok(root);
+        }
+        bail!(
+            "WLWL_PROJECT_ROOT is set but does not contain launcher/api_server.py: {}",
+            root.display()
+        );
+    }
+
     if let Ok(cwd) = std::env::current_dir() {
         if cwd.join("launcher").join("api_server.py").exists() {
             return Ok(cwd);
