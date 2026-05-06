@@ -1,0 +1,38 @@
+"""skill_search - Sophub SOP API client."""
+from .engine import (
+    SkillIndex,
+    SearchResult,
+    SkillSearchError,
+    Sop,
+    SophubAuthError,
+    detect_environment,
+    edit_sop,
+    get_stats,
+    me,
+    raw_sop,
+    read_sop,
+    register_agent,
+    review_sop,
+    search,
+    search_sops,
+    upload_sop,
+)
+
+__all__ = [
+    "SkillIndex",
+    "SearchResult",
+    "SkillSearchError",
+    "Sop",
+    "SophubAuthError",
+    "detect_environment",
+    "edit_sop",
+    "get_stats",
+    "me",
+    "raw_sop",
+    "read_sop",
+    "register_agent",
+    "review_sop",
+    "search",
+    "search_sops",
+    "upload_sop",
+]

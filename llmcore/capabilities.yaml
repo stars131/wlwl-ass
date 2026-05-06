@@ -1,0 +1,82 @@
+# wlwl-ass built-in capability declarations.
+# Format: top-level list of objects. Each object's keys become a CapabilityDecl.
+# Schema fields use a tiny JSON-Schema subset (type/required/properties/items).
+# See llmcore/capabilities.py for the parser.
+
+- id: chat.classify_tags.v1
+  description: Suggest 1-5 short tags for a piece of text using a chat LLM.
+  request_schema: {"type": "object", "required": ["text"], "properties": {"text": {"type": "string"}, "max_tags": {"type": "integer"}}}
+  response_schema: {"type": "object", "required": ["tags"], "properties": {"tags": {"type": "array", "items": {"type": "string"}}}}
+  cost_estimate_usd: 0.0001
+  default_deadline_ms: 8000
+
+- id: chat.completion.v1
+  description: General free-form chat completion delegated to a kernel-routed LLM worker.
+  request_schema: {"type": "object", "required": ["prompt"], "properties": {"prompt": {"type": "string"}, "system": {"type": "string"}, "max_tokens": {"type": "integer"}}}
+  response_schema: {"type": "object", "required": ["text"], "properties": {"text": {"type": "string"}}}
+  cost_estimate_usd: 0.001
+  default_deadline_ms: 30000
+
+- id: chat.intent_classify.v1
+  description: Constrained-output intent classifier producing {intent, confidence, args, fallback_reply}.
+  request_schema: {"type": "object", "required": ["utterance", "candidates"], "properties": {"utterance": {"type": "string"}, "candidates": {"type": "array", "items": {"type": "object"}}}}
+  response_schema: {"type": "object", "required": ["intent", "confidence"], "properties": {"intent": {"type": "string"}, "confidence": {"type": "number"}, "args": {"type": "object"}, "fallback_reply": {"type": "string"}}}
+  cost_estimate_usd: 0.0005
+  default_deadline_ms: 8000
+
+- id: calendar.create_event.v1
+  description: Create a calendar event.
+  request_schema: {"type": "object", "required": ["title", "start_at"], "properties": {"title": {"type": "string"}, "start_at": {"type": "string"}, "end_at": {"type": "string"}, "location": {"type": "string"}, "notes": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}}
+  response_schema: {"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}, "event": {"type": "object"}}}
+  cost_estimate_usd: 0.0
+  default_deadline_ms: 5000
+
+- id: calendar.update_event.v1
+  description: Update an existing calendar event by id or fuzzy title+date.
+  request_schema: {"type": "object", "required": ["match", "patch"], "properties": {"match": {"type": "object"}, "patch": {"type": "object"}}}
+  response_schema: {"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}, "before": {"type": "object"}, "after": {"type": "object"}}}
+  cost_estimate_usd: 0.0
+
+- id: calendar.delete_event.v1
+  description: Delete a calendar event by id or fuzzy match.
+  request_schema: {"type": "object", "required": ["match"], "properties": {"match": {"type": "object"}, "soft": {"type": "boolean"}}}
+  response_schema: {"type": "object", "required": ["id", "deleted"], "properties": {"id": {"type": "string"}, "deleted": {"type": "boolean"}}}
+  cost_estimate_usd: 0.0
+
+- id: calendar.query_events.v1
+  description: Query events in a date range with optional title/tag filters.
+  request_schema: {"type": "object", "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "q": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}}
+  response_schema: {"type": "object", "required": ["events"], "properties": {"events": {"type": "array", "items": {"type": "object"}}}}
+  cost_estimate_usd: 0.0
+
+- id: inspiration.record.v1
+  description: Persist a free-text note + optional tags + links.
+  request_schema: {"type": "object", "required": ["text"], "properties": {"text": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}, "links": {"type": "array", "items": {"type": "string"}}}}
+  response_schema: {"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}, "auto_tags": {"type": "array", "items": {"type": "string"}}}}
+  cost_estimate_usd: 0.0
+
+- id: inspiration.query.v1
+  description: Full-text search over recorded notes (FTS5).
+  request_schema: {"type": "object", "required": ["q"], "properties": {"q": {"type": "string"}, "limit": {"type": "integer"}}}
+  response_schema: {"type": "object", "required": ["notes"], "properties": {"notes": {"type": "array", "items": {"type": "object"}}}}
+  cost_estimate_usd: 0.0
+
+- id: inspiration.list_recent.v1
+  description: List the last N notes (default 20).
+  request_schema: {"type": "object", "properties": {"limit": {"type": "integer"}}}
+  response_schema: {"type": "object", "required": ["notes"], "properties": {"notes": {"type": "array", "items": {"type": "object"}}}}
+  cost_estimate_usd: 0.0
+
+- id: voice.stt.v1
+  description: Speech-to-text. Streamed audio in, transcript out.
+  request_schema: {"type": "object", "required": ["audio", "format"], "properties": {"audio": {"type": "string"}, "format": {"type": "string"}, "sample_rate": {"type": "integer"}, "language": {"type": "string"}}}
+  response_schema: {"type": "object", "required": ["text"], "properties": {"text": {"type": "string"}, "confidence": {"type": "number"}, "is_final": {"type": "boolean"}}}
+  cost_estimate_usd: 0.0006
+  default_deadline_ms: 10000
+
+- id: voice.tts.v1
+  description: Text-to-speech. Text in, streamed audio chunks out.
+  request_schema: {"type": "object", "required": ["text"], "properties": {"text": {"type": "string"}, "voice_id": {"type": "string"}, "speed": {"type": "number"}, "format": {"type": "string"}}}
+  response_schema: {"type": "object", "required": ["audio_chunk"], "properties": {"audio_chunk": {"type": "string"}, "seq": {"type": "integer"}, "is_final": {"type": "boolean"}, "text": {"type": "string"}}}
+  cost_estimate_usd: 0.0008
+  default_deadline_ms: 30000

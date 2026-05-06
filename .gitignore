@@ -1,0 +1,146 @@
+temp/
+tmp/
+.tmp/
+.deps/
+.pip-cache/
+pytest-cache-files-*/
+
+# GUI (Tauri + React) build artefacts
+gui/node_modules/
+gui/dist/
+gui/dist-ssr/
+gui/coverage/
+gui/playwright-report/
+gui/test-results/
+gui/src-tauri/target/
+node_modules/
+
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+
+.streamlit/
+
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+.DS_Store
+Thumbs.db
+
+*.log
+.env
+auth.json
+model_responses.txt
+
+# Sensitive files (API keys, credentials)
+mcp_servers.json
+
+# Centralised config store (project-scoped credentials + settings).
+# The user-scoped one (~/.wlwl-ass/) is outside the repo so .gitignore doesn't
+# matter there.
+.wlwl-ass/
+
+tasks/
+
+*.zip
+
+memory/*
+!memory/memory_management_sop.md
+
+# Allow tracking of specific SOPs
+!memory/web_setup_sop.md
+!memory/autonomous_operation_sop.md
+!memory/autonomous_operation_sop/
+!memory/autonomous_operation_sop/**
+!memory/scheduled_task_sop.md
+
+# L4 session archiver (only the script, not archives)
+!memory/L4_raw_sessions/
+memory/L4_raw_sessions/*
+!memory/L4_raw_sessions/compress_session.py
+
+# ljqCtrl related tools
+!memory/ljqCtrl.py
+!memory/ljqCtrl_sop.md
+
+# procmem_scanner related tools
+!memory/procmem_scanner.py
+!memory/procmem_scanner_sop.md
+
+# TMWebDriver SOP
+!memory/tmwebdriver_sop.md
+
+# Subagent SOP
+!memory/subagent_sop.md
+
+# Plan SOP
+!memory/plan_sop.md
+
+# Skill Search SOP
+!memory/skill_search/
+!memory/skill_search/**
+
+
+# ADB UI tool
+!memory/adb_ui.py
+
+# Keychain
+!memory/keychain.py
+
+# Vision / OCR / UI detection tools
+!memory/ocr_utils.py
+!memory/vision_sop.md
+!memory/ui_detect.py
+!memory/vision_api.template.py
+
+# Memory management
+!memory/memory_cleanup_sop.md
+!memory/checkpoint_sop.md
+!memory/github_contribution_sop.md
+!memory/image_gen_sop.md
+!memory/moa_sop.md
+!memory/process_sop.md
+!memory/skill_propose_sop.md
+!memory/skill_self_improve.py
+!memory/subagent.md
+!memory/verify_sop.md
+!memory/voice_sop.md
+!memory/wlwl_ass_deps_sop.md
+
+# Visual Studio
+.vs/
+restore_commit.txt
+
+sche_tasks/
+# CDP Bridge 密钥配置（首次运行自动生成）
+assets/tmwd_cdp_bridge/config.js
+assets/copilot_proxy.pyw
+**log.*
+# `**log.*` is broad — it would otherwise eat our activity-log Python
+# source. Whitelist it explicitly.
+!launcher/activity_log.py
+!tests/test_activity_log.py
+
+# Tauri-generated schemas (regenerated on build) and TS incremental
+# build info (per-machine cache).
+gui/src-tauri/gen/
+gui/*.tsbuildinfo
+**/*.tsbuildinfo
+**/.tscache/
+
+# Reflect (ignore new files, whitelist existing)
+reflect/*
+!reflect/autonomous.py
+!reflect/scheduler.py
+
+# Universal: never track __pycache__ anywhere
+**/__pycache__/

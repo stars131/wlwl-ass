@@ -1,0 +1,148 @@
+{
+  "common": {
+    "loading": "加载中…",
+    "save": "保存",
+    "saved": "已保存",
+    "saveFailed": "保存失败：{{error}}",
+    "reset": "重置",
+    "close": "关闭",
+    "create": "新建",
+    "delete": "删除",
+    "rename": "重命名",
+    "refresh": "刷新",
+    "clear": "清屏",
+    "reconnect": "重连",
+    "log": "日志",
+    "open": "打开",
+    "start": "启动",
+    "stop": "停止",
+    "pin": "置顶",
+    "unpin": "取消置顶",
+    "backendLoadFailed": "后端连接失败：{{error}}"
+  },
+  "app": {
+    "tabs": {
+      "sessions": "会话",
+      "bots": "Bots",
+      "apiConfigs": "API 配置",
+      "activity": "活动",
+      "skills": "技能",
+      "settings": "设置"
+    },
+    "status": {
+      "connecting": "🟡 connecting",
+      "offline": "🔴 backend offline",
+      "ok": "🟢 backend ok"
+    },
+    "shortcutsHint": "Cmd/Ctrl+/ 查看快捷键"
+  },
+  "sessions": {
+    "title": "会话",
+    "subtitle": "多会话同时运行；每个会话可单独选 API 配置（ADR-0006）。",
+    "newPlaceholder": "新会话名称",
+    "empty": "暂无会话，先在上面新建一个。",
+    "renamePrompt": "新名称：",
+    "deleteConfirm": "删除 {{name}}？",
+    "running": "🟢 运行中",
+    "stopped": "⚪ 已停"
+  },
+  "logDrawer": {
+    "title": "日志：{{name}}",
+    "sseLive": "SSE 实时模式",
+    "snapshot": "快照模式",
+    "waitingProject": "等待日志…（项目尚未输出或未启动）",
+    "closedHint": "连接已关闭，可点击右上角\"重连\"继续抓取。",
+    "botMissing": "日志文件还不存在（bot 尚未运行）。",
+    "emptyFile": "空文件。等待新日志…",
+    "switchSnapshot": "切换快照",
+    "switchLive": "切换实时"
+  },
+  "settings": {
+    "title": "设置",
+    "subtitle": "全局默认值。已运行的会话需重启才能采用新默认值。",
+    "language": "语言"
+  },
+  "doctor": {
+    "title": "诊断",
+    "subtitle": "检查安装：依赖、API key、目录、bot SDK。每个失败项都带精确修复命令。",
+    "run": "运行",
+    "copy": "复制",
+    "copied": "已复制",
+    "notRun": "尚未运行 — 点击\"运行\"。",
+    "includeNetwork": "包含网络探测（较慢）",
+    "summary": {
+      "fail": "{{n}} 失败",
+      "warn": "{{n}} 警告",
+      "ok": "{{n}} 通过",
+      "info": "{{n}} 信息"
+    }
+  },
+  "activity": {
+    "title": "活动",
+    "subtitle": "Agent 实时工具调用与回合摘要。看 agent 在做什么、是否在打转。",
+    "modeLive": "实时模式",
+    "modeSnapshot": "快照模式",
+    "switchSnapshot": "切到快照",
+    "switchLive": "切到实时",
+    "filterPlaceholder": "按工具名/摘要过滤…",
+    "pause": "暂停",
+    "resume": "恢复",
+    "shown": "{{shown}} / {{total}} 条",
+    "jumpLatest": "↓ 跳到最新",
+    "empty": "尚无活动记录。Agent 调用工具时会出现在这里。",
+    "noMatch": "当前过滤无匹配。"
+  },
+  "skills": {
+    "title": "技能",
+    "subtitle": "memory/ 下所有 SOP 与其历史成功率，看哪些技能在用、哪些总失败。",
+    "filterPlaceholder": "按名称/标题过滤…",
+    "shown": "显示 {{shown}} / {{total}}",
+    "totalInvocations": "累计调用 {{count}} 次",
+    "invocations_one": "{{count}} 次",
+    "invocations_other": "{{count}} 次",
+    "neverUsed": "从未调用",
+    "ok_one": "完成 {{count}}",
+    "ok_other": "完成 {{count}}",
+    "maxTurns_one": "超回合 {{count}}",
+    "maxTurns_other": "超回合 {{count}}",
+    "exited_one": "中途退出 {{count}}",
+    "exited_other": "中途退出 {{count}}",
+    "other_one": "其他 {{count}}",
+    "other_other": "其他 {{count}}",
+    "lastSeen": "最近",
+    "lastSeenTitle": "最近一次回合结束并归属到此技能的时间",
+    "empty": "memory/ 下还没有 *_sop.md。",
+    "noMatch": "当前过滤无匹配。"
+  },
+  "language": {
+    "zh": "中文",
+    "en": "English"
+  },
+  "tokenUsage": {
+    "input": "输入 token",
+    "output": "输出 token",
+    "cacheRead": "缓存命中",
+    "cacheCreation": "缓存写入",
+    "calls": "调用次数",
+    "cacheHitRate": "缓存命中率",
+    "since": "起始时间",
+    "clickToReset": "点击重置计数",
+    "confirmReset": "重置 token 用量计数器？"
+  },
+  "onboarding": {
+    "title": "首次启动 · 配置 LLM",
+    "subtitle": "wlwl-ass 还没找到可用的 API key。填一个就能跑——会保存到 .env。",
+    "provider": {
+      "openai": "OpenAI / 兼容",
+      "anthropic": "Anthropic / Claude"
+    },
+    "apikey": "API Key",
+    "advanced": "高级（自定义 base URL / 模型）",
+    "baseUrl": "Base URL",
+    "model": "Model",
+    "save": "保存并继续",
+    "savesTo": "写入 .env",
+    "dismiss": "稍后再说",
+    "dismissTitle": "关闭弹窗（agent 仍无法使用，直到你配好 .env 或在 GUI 「API 配置」 tab 里加一条）"
+  }
+}

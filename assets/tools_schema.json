@@ -1,0 +1,173 @@
+[
+  {"type": "function", "function": {
+    "name": "code_run",
+    "description": "Code executor. Prefer python. Multi-call OK, use script param. Reply code block is executed if no script arg; prefer for single call to avoid escaping. No hardcoding bulk data",
+    "parameters": {"type": "object", "properties": {
+      "script": {"type": "string", "description": "[Mutually exclusive] NEVER use this param when use reply code block."},
+      "type": {"type": "string", "enum": ["python", "powershell"], "description": "Code type", "default": "python"},
+      "timeout": {"type": "integer", "description": "in seconds", "default": 60},
+      "cwd": {"type": "string", "description": "Working directory, defaults to cwd"},
+      "inline_eval": {"type": "boolean", "description": "DO NOT USE except explicitly specified."}}}
+  }},
+  {"type": "function", "function": {
+    "name": "file_read",
+    "description": "Read file. Read before modify for latest context and line numbers",
+    "parameters": {"type": "object", "properties": {
+      "path": {"type": "string", "description": "Relative or absolute"},
+      "start": {"type": "integer", "description": "Start line number (1-based)"},
+      "count": {"type": "integer", "description": "Number of lines to read", "default": 200},
+      "keyword": {"type": "string", "description": "[Optional] If provided, returns first match (case-insensitive) with context"},
+      "show_linenos": {"type": "boolean", "description": "Show line numbers", "default": true}}}
+  }},
+  {"type": "function", "function": {
+    "name": "file_patch",
+    "description": "Replace unique old_content with new_content. Exact match required (whitespace/indentation). On failure, file_read to recheck",
+    "parameters": {"type": "object", "properties": {
+      "path": {"type": "string", "description": "File path"},
+      "old_content": {"type": "string", "description": "Original text block to replace (must be unique)"},
+      "new_content": {"type": "string", "description": "New content. Supports {{file:path:startLine:endLine}} to ref file lines, auto-expanded"}}}
+  }},
+  {"type": "function", "function": {
+    "name": "file_write",
+    "description": "Create/overwrite/append files. ONLY for HUGE edits. Place <file_content>...</file_content> in reply body BEFORE the file_write call. Supports {{file:path:startLine:endLine}}, auto-expanded",
+    "parameters": {"type": "object", "properties": {
+      "path": {"type": "string", "description": "File path"},
+      "mode": {"type": "string", "enum": ["overwrite", "append", "prepend"], "description": "Write mode", "default": "append"}}}
+  }},
+  {"type": "function", "function": {
+    "name": "web_scan",
+    "description": "Get simplified HTML and tab list. Removes hidden/floating/covered elements. Call after switching pages",
+    "parameters": {"type": "object", "properties": {
+      "tabs_only": {"type": "boolean", "description": "Show tab list only, no HTML"},
+      "switch_tab_id": {"type": "string", "description": "[Optional] Tab ID to switch to"},
+      "text_only": {"type": "boolean", "description": "Plain text only, no HTML"}}}
+  }},
+  {"type": "function", "function": {
+    "name": "web_execute_js",
+    "description": "Execute JS. Multi-call OK with different switch_tab_id. No guessing. Act accurately to reduce web_scan calls. Execute JS in ```javascript blocks if no script arg, prefer to avoid escaping",
+    "parameters": {"type": "object", "properties": {
+      "script": {"type": "string", "description": "[Mutually exclusive] JS code or script path. NEVER use this param when use reply code block"},
+      "save_to_file": {"type": "string", "description": "file path; **only** for long result"},
+      "no_monitor": {"type": "boolean", "description": "Skip page change monitoring, saves 2-3s. Only for reads, not for page actions"},
+      "switch_tab_id": {"type": "string", "description": "[Optional] Tab ID to switch to before executing"}}}
+  }},
+  {"type": "function", "function": {
+    "name": "update_working_checkpoint",
+    "description": "Short-term working notepad, auto-injected each turn to prevent info loss in long tasks. Call during early/mid stages, not at end. When: (1) after reading SOP, store user needs & key constraints (skip for simple 1-2 step tasks); (2) before subtask switch or context flush; (3) after repeated failures, re-read SOP and must store new findings; (4) on new task, update content, clear old progress but keep valid constraints.\n\nDon't call: simple tasks (1-2 steps), task completed (use long-term memory tool)",
+    "parameters": {"type": "object", "properties": {
+      "key_info": {"type": "string", "description": "Replaces current notepad (<200 tokens). Incremental update: review existing, keep valid, add/remove/modify. Store: pitfalls, user requirements, key params/findings, file paths, progress, next steps. Don't store: ephemeral info, obvious context, old task info when user switched tasks. Prefer over-updating over losing key info"},
+      "related_sop": {"type": "string", "description": "Related SOP names, tips for further re-read"}}}
+  }},
+  {"type": "function", "function": {
+    "name": "ask_user",
+    "description": "Interrupt task to ask user when needing decisions, extra info, or facing unresolvable blockers",
+    "parameters": {"type": "object", "properties": {
+      "question": {"type": "string", "description": "Question for the user"},
+      "candidates": {"type": "array", "items": {"type": "string"}, "description": "Optional quick-select choices for the user"}}}
+  }},
+  {"type": "function", "function": {
+    "name": "start_long_term_update",
+    "description": "Start distilling long-term memory. Call when discovering info worth remembering (env facts/user prefs/lessons learned). Skip if memory already updated or in autonomous flow. Must call when a task that took 15+ turns is completed",
+    "parameters": {"type": "object", "properties": {}}}
+  },
+  {"type": "function", "function": {
+    "name": "sop_search",
+    "description": "Search Sophub (fudankw.cn/sophub) for SOPs / shared skills others uploaded. Use this as a first move on unfamiliar tasks — there may already be a verified workflow you can reuse instead of figuring it out from scratch. Returns top results with id, title, score and a short preview.",
+    "parameters": {"type": "object", "properties": {
+      "query": {"type": "string", "description": "Natural-language query (zh or en both fine)"},
+      "top_k": {"type": "integer", "description": "Number of results (1-25)", "default": 5}},
+      "required": ["query"]}}
+  },
+  {"type": "function", "function": {
+    "name": "sop_read",
+    "description": "Fetch the full content of a specific SOP by id (id from sop_search). Use BEFORE applying an SOP so you have the actual steps, not just the preview.",
+    "parameters": {"type": "object", "properties": {
+      "sop_id": {"type": "string", "description": "SOP id from sop_search results"}},
+      "required": ["sop_id"]}}
+  },
+  {"type": "function", "function": {
+    "name": "mcp_call",
+    "description": "Single-entry gateway to every configured MCP (Model Context Protocol) server. Use this to access external capabilities the user has installed (filesystem servers, GitHub, databases, custom internal tools, etc.) without GA needing a dedicated tool for each. Three usage patterns: (1) Call with NO arguments to list all configured servers. (2) Call with only `server` set to list the tools that server exposes. (3) Call with `server`, `tool`, and `arguments` to actually invoke a tool. Always discover before invoking — server tool names and schemas are user-controlled and not knowable in advance. Returns plain text suitable for direct reading.",
+    "parameters": {"type": "object", "properties": {
+      "server": {"type": "string", "description": "MCP server name. Omit to list configured servers."},
+      "tool": {"type": "string", "description": "Tool name on that server. Omit to list the server's tools."},
+      "arguments": {"type": "object", "description": "Tool arguments — match the server's inputSchema as returned by the discovery list."},
+      "timeout": {"type": "number", "description": "Per-call timeout in seconds (default 60)."}}}
+  }},
+  {"type": "function", "function": {
+    "name": "process",
+    "description": "Background-process registry. Use this whenever you spawn a long-running OS process (browser, shell, watcher, headless agent) so it remains visible and killable across turns. Without it the pid scrolls off chat history and you can't reap zombies. Actions: (1) `register` — record a process you've already spawned, with a label you'll use to refer to it later; (2) `list` — show all registered processes with `alive` flags; (3) `kill` — terminate by pid OR label; (4) `cleanup_dead` — drop entries whose pids are no longer alive. Default action is `list`.",
+    "parameters": {"type": "object", "properties": {
+      "action": {"type": "string", "enum": ["register", "list", "kill", "cleanup_dead"], "description": "Operation to perform.", "default": "list"},
+      "label": {"type": "string", "description": "Human-readable handle. Required for `register`. Optional for `kill` (kills all entries with this label)."},
+      "pid": {"type": "integer", "description": "OS pid. Required for `register`. Optional for `kill` (alternative to label)."},
+      "kind": {"type": "string", "description": "Process category, e.g. 'browser' / 'shell' / 'task'. Free-form."},
+      "cmd": {"type": "string", "description": "Original command line, for log clarity."},
+      "force": {"type": "boolean", "description": "On `kill`: escalate to SIGKILL / taskkill /F if the graceful terminate hangs."}}}
+  }},
+  {"type": "function", "function": {
+    "name": "checkpoint",
+    "description": "Persist intermediate state for long tasks so a restart / context-flush doesn't erase progress. Storage is per-task; checkpoints accumulate up to 50 per task (oldest dropped). Actions: (1) `save` — write a new checkpoint, returns its id; (2) `load` — read the latest (or named via `checkpoint_id`); (3) `list` — enumerate without state body; (4) `clear` — delete all checkpoints for the task; (5) `list_tasks` — show every task that has at least one checkpoint. Use 1+ snapshots into multi-step tasks; `state` is whatever JSON you need to resume.",
+    "parameters": {"type": "object", "properties": {
+      "action": {"type": "string", "enum": ["save", "load", "list", "clear", "list_tasks"], "description": "Operation to perform.", "default": "list_tasks"},
+      "task_id": {"type": "string", "description": "Stable id for the task (e.g. 'refactor-auth-2026-05-04'). Required for save/load/list/clear."},
+      "state": {"description": "Arbitrary JSON-serialisable state. Required for save."},
+      "note": {"type": "string", "description": "Free-text annotation, e.g. 'after step 3 of 7'."},
+      "checkpoint_id": {"type": "string", "description": "Specific checkpoint id for load. Omit to fetch the most recent."}}}
+  }},
+  {"type": "function", "function": {
+    "name": "vision",
+    "description": "Unified image-understanding tool. Sends an image (path or bytes) to the user's configured vision-capable LLM. Actions: (1) `describe` — free-form description; (2) `ocr` — extract visible text only; (3) `extract` — return JSON matching `schema`. Routes automatically to the first claude-vision or gpt-vision config in mykey. Returns a string for describe/ocr, a dict for extract. On failure returns `'Error: ...'` so you can branch on prefix.",
+    "parameters": {"type": "object", "properties": {
+      "action": {"type": "string", "enum": ["describe", "ocr", "extract"], "description": "Operation."},
+      "image_path": {"type": "string", "description": "Filesystem path to the image (png/jpg/webp/etc). Required."},
+      "prompt": {"type": "string", "description": "Optional override prompt. Defaults sane for each action."},
+      "schema": {"type": "object", "description": "Required for `extract` — describe the JSON shape you want back."},
+      "lang": {"type": "string", "description": "Optional language hint for `ocr` (e.g. 'zh-CN')."}},
+      "required": ["action", "image_path"]}}
+  },
+  {"type": "function", "function": {
+    "name": "mixture_of_agents",
+    "description": "Fan a single prompt out to N model configs in parallel, then synthesise via an aggregator. Different from `MixinSession` (failover) — this runs every member and combines. Use when quality matters more than latency, or to get a multi-model second-opinion. Member names refer to entries in api_configs. Returns the aggregated answer plus per-member outputs and timings. Defaults the aggregator to the first member if not specified.",
+    "parameters": {"type": "object", "properties": {
+      "prompt": {"type": "string", "description": "User question / instruction sent to every member."},
+      "member_names": {"type": "array", "items": {"type": "string"}, "description": "Config names from api_configs. Min 1. Run in parallel."},
+      "aggregator_name": {"type": "string", "description": "Config that synthesises member answers. Defaults to member_names[0]."},
+      "timeout_s": {"type": "number", "description": "Per-member timeout in seconds (default 180)."}},
+      "required": ["prompt", "member_names"]}}
+  },
+  {"type": "function", "function": {
+    "name": "voice",
+    "description": "Audio I/O via OpenAI-compatible /audio endpoints. Actions: (1) `transcribe` — speech-to-text from an audio file; (2) `tts` — text-to-speech, writes binary to `output_path`; (3) `tts_edge` — free local TTS via the optional `edge-tts` package. Picks the first config in mykey with `audio_capable: True` (or known audio-host hints). Returns the transcribed text or output path; `'Error: ...'` on failure.",
+    "parameters": {"type": "object", "properties": {
+      "action": {"type": "string", "enum": ["transcribe", "tts", "tts_edge"], "description": "Operation."},
+      "audio_path": {"type": "string", "description": "Required for `transcribe`. Path to mp3/wav/m4a/etc."},
+      "text": {"type": "string", "description": "Required for tts/tts_edge. The text to synthesise."},
+      "output_path": {"type": "string", "description": "Required for tts/tts_edge. Where to write the audio file."},
+      "voice": {"type": "string", "description": "TTS voice (e.g. 'alloy' for OpenAI, 'zh-CN-XiaoxiaoNeural' for edge-tts)."},
+      "model": {"type": "string", "description": "Override model (default 'whisper-1' / 'tts-1')."},
+      "language": {"type": "string", "description": "ISO 639-1 hint for transcribe."}},
+      "required": ["action"]}}
+  },
+  {"type": "function", "function": {
+    "name": "image_generate",
+    "description": "Generate one or more images from a text prompt via /images/generations. Picks the first mykey config with `image_capable: True` (or known image-host hints). Writes the result to `output_path`; if `n>1` writes numbered siblings (`foo.png`, `foo-2.png`, ...). Returns the primary path or `'Error: ...'`.",
+    "parameters": {"type": "object", "properties": {
+      "prompt": {"type": "string", "description": "Image description."},
+      "output_path": {"type": "string", "description": "Where to write the primary image (e.g. 'temp/img/scene.png')."},
+      "model": {"type": "string", "description": "Override model name (e.g. 'dall-e-3')."},
+      "size": {"type": "string", "description": "e.g. '1024x1024' / '1792x1024'.", "default": "1024x1024"},
+      "quality": {"type": "string", "description": "'standard' or 'hd' (provider-specific)."},
+      "n": {"type": "integer", "description": "Number of variants.", "default": 1}},
+      "required": ["prompt", "output_path"]}}
+  },
+  {"type": "function", "function": {
+    "name": "skill_propose_patch",
+    "description": "Propose an improvement to an SOP/skill file you just used. The proposal is queued for user review (does NOT modify the file directly). Use after running a skill if you noticed: a missing precondition, an outdated tool name, a clearer phrasing, a new edge case worth documenting. The user can accept (applies + auto-backs-up the original) or reject. Diff format: unified diff (preferred) OR a complete replacement file.",
+    "parameters": {"type": "object", "properties": {
+      "skill_id": {"type": "string", "description": "SOP filename, e.g. 'plan' / 'plan_sop' / 'plan_sop.md'. Looked up in memory/."},
+      "diff": {"type": "string", "description": "Unified diff (`---`/`+++`/`@@`) or a complete new file body."},
+      "reason": {"type": "string", "description": "Why this change improves the skill."}},
+      "required": ["skill_id", "diff"]}}
+  }
+]

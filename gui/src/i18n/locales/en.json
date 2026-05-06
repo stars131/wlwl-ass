@@ -1,0 +1,148 @@
+{
+  "common": {
+    "loading": "Loading…",
+    "save": "Save",
+    "saved": "Saved",
+    "saveFailed": "Save failed: {{error}}",
+    "reset": "Reset",
+    "close": "Close",
+    "create": "Create",
+    "delete": "Delete",
+    "rename": "Rename",
+    "refresh": "Refresh",
+    "clear": "Clear",
+    "reconnect": "Reconnect",
+    "log": "Log",
+    "open": "Open",
+    "start": "Start",
+    "stop": "Stop",
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "backendLoadFailed": "Backend unreachable: {{error}}"
+  },
+  "app": {
+    "tabs": {
+      "sessions": "Sessions",
+      "bots": "Bots",
+      "apiConfigs": "API Configs",
+      "activity": "Activity",
+      "skills": "Skills",
+      "settings": "Settings"
+    },
+    "status": {
+      "connecting": "🟡 connecting",
+      "offline": "🔴 backend offline",
+      "ok": "🟢 backend ok"
+    },
+    "shortcutsHint": "Cmd/Ctrl+/ for shortcuts"
+  },
+  "sessions": {
+    "title": "Sessions",
+    "subtitle": "Multiple sessions run in parallel; each picks its own API config (ADR-0006).",
+    "newPlaceholder": "New session name",
+    "empty": "No sessions yet — create one above.",
+    "renamePrompt": "New name:",
+    "deleteConfirm": "Delete {{name}}?",
+    "running": "🟢 running",
+    "stopped": "⚪ stopped"
+  },
+  "logDrawer": {
+    "title": "Log: {{name}}",
+    "sseLive": "SSE live mode",
+    "snapshot": "Snapshot mode",
+    "waitingProject": "Waiting for log… (project hasn't emitted output yet)",
+    "closedHint": "Connection closed. Click \"Reconnect\" in the top-right to resume.",
+    "botMissing": "Log file does not exist yet (bot not running).",
+    "emptyFile": "Empty file. Waiting for new log entries…",
+    "switchSnapshot": "To snapshot",
+    "switchLive": "To live"
+  },
+  "settings": {
+    "title": "Settings",
+    "subtitle": "Global defaults. Restart running sessions for changes to take effect.",
+    "language": "Language"
+  },
+  "doctor": {
+    "title": "Diagnostics",
+    "subtitle": "Check your install: deps, keys, paths, bot SDKs. Each fail comes with the exact shell fix.",
+    "run": "Run",
+    "copy": "Copy",
+    "copied": "Copied!",
+    "notRun": "Not run yet — click Run.",
+    "includeNetwork": "Include network probe (slow)",
+    "summary": {
+      "fail": "{{n}} fail",
+      "warn": "{{n}} warn",
+      "ok": "{{n}} ok",
+      "info": "{{n}} info"
+    }
+  },
+  "activity": {
+    "title": "Activity",
+    "subtitle": "Live tool calls + turn summaries. See what the agent is doing — and whether it's looping.",
+    "modeLive": "Live mode",
+    "modeSnapshot": "Snapshot mode",
+    "switchSnapshot": "Switch to snapshot",
+    "switchLive": "Switch to live",
+    "filterPlaceholder": "Filter by tool / summary…",
+    "pause": "Pause",
+    "resume": "Resume",
+    "shown": "{{shown}} / {{total}} events",
+    "jumpLatest": "↓ Jump to latest",
+    "empty": "No activity yet. Tool calls will appear here as the agent runs.",
+    "noMatch": "No events match the current filter."
+  },
+  "skills": {
+    "title": "Skills",
+    "subtitle": "Every SOP under memory/ and how well the agent runs it. Spot weak playbooks at a glance.",
+    "filterPlaceholder": "Filter by name / title…",
+    "shown": "Showing {{shown}} / {{total}}",
+    "totalInvocations": "{{count}} total invocations",
+    "invocations_one": "{{count}} invocation",
+    "invocations_other": "{{count}} invocations",
+    "neverUsed": "never used",
+    "ok_one": "{{count}} ok",
+    "ok_other": "{{count}} ok",
+    "maxTurns_one": "{{count}} max-turns",
+    "maxTurns_other": "{{count}} max-turns",
+    "exited_one": "{{count}} exited",
+    "exited_other": "{{count}} exited",
+    "other_one": "{{count}} other",
+    "other_other": "{{count}} other",
+    "lastSeen": "Last seen",
+    "lastSeenTitle": "Most recent turn_end attributed to this skill",
+    "empty": "No *_sop.md files in memory/ yet.",
+    "noMatch": "No skills match the current filter."
+  },
+  "language": {
+    "zh": "中文",
+    "en": "English"
+  },
+  "tokenUsage": {
+    "input": "Input tokens",
+    "output": "Output tokens",
+    "cacheRead": "Cache hits",
+    "cacheCreation": "Cache writes",
+    "calls": "Calls",
+    "cacheHitRate": "Cache hit rate",
+    "since": "Since",
+    "clickToReset": "Click to reset counters",
+    "confirmReset": "Reset token-usage counters?"
+  },
+  "onboarding": {
+    "title": "First-run · Configure LLM",
+    "subtitle": "wlwl-ass didn't find a usable API key. Drop one in and you're good — saved to .env.",
+    "provider": {
+      "openai": "OpenAI / compatible",
+      "anthropic": "Anthropic / Claude"
+    },
+    "apikey": "API Key",
+    "advanced": "Advanced (custom base URL / model)",
+    "baseUrl": "Base URL",
+    "model": "Model",
+    "save": "Save & continue",
+    "savesTo": "Writes to .env",
+    "dismiss": "Maybe later",
+    "dismissTitle": "Close (agent stays unusable until you configure .env or add an entry in the API 配置 tab)"
+  }
+}

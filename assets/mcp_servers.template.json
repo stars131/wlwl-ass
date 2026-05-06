@@ -1,0 +1,20 @@
+{
+  "_comment": "Copy this file to ../mcp_servers.json (project root) and fill in real servers. The runtime reads project_root/mcp_servers.json by default; override with WLWL_MCP_CONFIG_PATH. Each server entry needs `command` (the executable) and optionally `args`, `env`, `cwd`. wlwl-ass spawns the subprocess on demand and speaks JSON-RPC 2.0 over stdio. Untrusted servers can do anything they're configured to do — review before adding, same risk class as code_run.",
+  "mcpServers": {
+    "filesystem-example": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
+    },
+    "github-example": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_replace_with_real_token"
+      }
+    },
+    "sqlite-example": {
+      "command": "uvx",
+      "args": ["mcp-server-sqlite", "--db-path", "/path/to/db.sqlite"]
+    }
+  }
+}
