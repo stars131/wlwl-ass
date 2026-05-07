@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("auto", "tauri", "qt", "cli", "legacy-shell")]
+    [ValidateSet("auto", "tauri")]
     [string]$Mode = "auto",
     [switch]$CheckOnly,
     [switch]$SkipInstall,
@@ -292,10 +292,38 @@ function Install-PythonDependencies {
 function Resolve-Tool {
     param([Parameter(Mandatory = $true)][string]$Name)
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -eq $cmd) {
-        return $null
+    if ($cmd) {
+        return $cmd.Source
     }
-    return $cmd.Source
+    # Fallback: probe well-known install dirs the user's PATH may have missed
+    # (Rustup / Node / npm installers don't always trigger an immediate refresh
+    # of the PowerShell session's PATH; bash sees them, PowerShell doesn't.)
+    $extraDirs = @()
+    if ($Name -in @("cargo", "rustc", "rustup")) {
+        $extraDirs += (Join-Path $env:USERPROFILE ".cargo\bin")
+    }
+    if ($Name -in @("npm", "node", "npx")) {
+        if ($env:APPDATA) { $extraDirs += (Join-Path $env:APPDATA "npm") }
+        $extraDirs += (Join-Path $env:USERPROFILE "npm")
+        if ($env:ProgramFiles) { $extraDirs += (Join-Path $env:ProgramFiles "nodejs") }
+        if (${env:ProgramFiles(x86)}) { $extraDirs += (Join-Path ${env:ProgramFiles(x86)} "nodejs") }
+    }
+    foreach ($dir in $extraDirs) {
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        foreach ($ext in @(".exe", ".cmd", ".bat", "")) {
+            $candidate = Join-Path $dir ($Name + $ext)
+            if (Test-Path -LiteralPath $candidate) {
+                # Prepend the dir to PATH so spawned children (e.g. npm run
+                # tauri:dev → cargo) inherit it.
+                if (($env:PATH -split [System.IO.Path]::PathSeparator) -notcontains $dir) {
+                    $env:PATH = $dir + [System.IO.Path]::PathSeparator + $env:PATH
+                    Write-Log "Resolve-Tool: prepending $dir to PATH (found $Name out-of-band)"
+                }
+                return $candidate
+            }
+        }
+    }
+    return $null
 }
 
 function Get-NodeVersion {
@@ -429,16 +457,6 @@ function Run-Validation {
 function Get-LaunchCommand {
     param([string]$RequestedMode)
 
-    if ($RequestedMode -eq "cli") {
-        return [pscustomobject]@{ Script = "agentmain.py"; Args = @() }
-    }
-    if ($RequestedMode -eq "qt") {
-        return [pscustomobject]@{ Script = "launch.pyw"; Args = @("--qt-legacy") }
-    }
-    if ($RequestedMode -eq "legacy-shell") {
-        return [pscustomobject]@{ Script = "launch.pyw"; Args = @("--legacy-shell") }
-    }
-
     $packaged = Find-PackagedTauriBinary
     if ($packaged) {
         Write-Log "Packaged Tauri binary exists: $packaged"
@@ -446,24 +464,19 @@ function Get-LaunchCommand {
     }
 
     $toolchain = Test-TauriToolchain
-    if ($toolchain.Ready) {
-        Write-Log "Tauri toolchain ready. Node=$($toolchain.NodeVersion), npm=$($toolchain.Npm), cargo=$($toolchain.Cargo)"
-        $nodeReady = Ensure-GuiNodeDependencies -Required:($RequestedMode -eq "tauri")
-        if ($nodeReady) {
-            return [pscustomobject]@{ Script = "launch.pyw"; Args = @() }
-        }
-    } else {
+    if (-not $toolchain.Ready) {
         foreach ($reason in $toolchain.Reasons) {
-            Write-Log "Tauri unavailable: $reason" "WARN"
+            Write-Log "Tauri unavailable: $reason" "ERROR"
         }
+        throw "Tauri toolchain not ready. Install Node.js >=20.9 and Rust cargo, then rerun."
     }
 
-    if ($RequestedMode -eq "tauri") {
-        throw "Tauri mode was requested, but the Tauri toolchain is not ready. See the log above."
+    Write-Log "Tauri toolchain ready. Node=$($toolchain.NodeVersion), npm=$($toolchain.Npm), cargo=$($toolchain.Cargo)"
+    $nodeReady = Ensure-GuiNodeDependencies -Required
+    if (-not $nodeReady) {
+        throw "Failed to install GUI Node dependencies."
     }
-
-    Write-Log "Auto mode is using Qt fallback."
-    return [pscustomobject]@{ Script = "launch.pyw"; Args = @("--qt-legacy") }
+    return [pscustomobject]@{ Script = "launch.pyw"; Args = @() }
 }
 
 function Start-WlwlAss {

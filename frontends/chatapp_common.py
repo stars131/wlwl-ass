@@ -208,7 +208,7 @@ def require_runtime(agent, label, **required):
         sys.exit(1)
     if agent.llmclient is None:
         print(f"[{label}] ERROR: no usable LLM backend — "
-              f"set OPENAI_API_KEY in .env or run `python -m launcher.cli_init`")
+              f"set OPENAI_API_KEY in .env or open the GUI's API Config tab")
         sys.exit(1)
 
 

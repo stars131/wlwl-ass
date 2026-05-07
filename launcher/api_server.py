@@ -26,12 +26,14 @@ Run standalone:
 from __future__ import annotations
 
 import argparse
+import atexit
 import http.server
 import json
 import os
 import platform
 import socket
 import socketserver
+import subprocess
 import sys
 import threading
 import time
@@ -42,9 +44,12 @@ API_VERSION = "v1"
 APP_VERSION = "0.1.0"
 READY_MARKER = "__GA_READY__"
 
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 _started_at = time.monotonic()
 _project_manager = None  # lazy ProjectManager instance
 _bot_manager = None  # lazy BotManager instance
+_scheduler_proc: subprocess.Popen | None = None  # L4 reflect/scheduler.py child
 
 
 # ─── Lazy backend wiring ───────────────────────────────────────────────
@@ -1284,11 +1289,111 @@ def _make_server(host: str, port: int) -> _ThreadingServer:
     return _ThreadingServer((host, port), _Handler)
 
 
+# ─── Auto-start hooks (bots + scheduler) ──────────────────────────────
+
+
+def _auto_start_configured_bots() -> None:
+    """Start every IM bot whose credentials + SDK are ready.
+
+    Replaces the old `launch_options.<key>` opt-in flag pattern: if the user
+    bothered to put `fs_app_id` + `fs_app_secret` in the config and `pip
+    install lark_oapi`, we assume they want the bot up. Bots already running
+    (own subprocess from a previous boot, or external instance holding the
+    single-instance lock port) are skipped.
+    """
+    try:
+        bm = _bm()
+        statuses = bm.status_all()
+    except Exception as exc:
+        print(f"[api_server] auto-start bots: status probe failed: {exc}", flush=True)
+        return
+    for key, st in statuses.items():
+        if st.running:
+            continue
+        if not (st.configured and st.sdk_installed):
+            continue
+        try:
+            ok, msg = bm.start(key)
+        except Exception as exc:
+            print(f"[api_server] auto-start bot {key} crashed: {exc}", flush=True)
+            continue
+        print(f"[api_server] auto-start bot {key}: {msg}", flush=True)
+
+
+def _auto_start_scheduler() -> None:
+    """Spawn `agentmain.py --reflect reflect/scheduler.py` if enabled in launch_options."""
+    global _scheduler_proc
+    try:
+        from launcher.launch_config import load_options
+        opts = load_options(_project_root())
+    except Exception as exc:
+        print(f"[api_server] auto-start scheduler: load_options failed: {exc}", flush=True)
+        return
+    if not opts.get("scheduler", True):
+        print("[api_server] scheduler disabled in launch_options; skipping", flush=True)
+        return
+    if _scheduler_proc is not None and _scheduler_proc.poll() is None:
+        return  # already running in this process
+    root = _project_root()
+    cmd = [
+        sys.executable,
+        os.path.join(root, "agentmain.py"),
+        "--reflect",
+        os.path.join(root, "reflect", "scheduler.py"),
+        "--llm_no",
+        str(opts.get("llm_no", 0)),
+    ]
+    try:
+        _scheduler_proc = subprocess.Popen(
+            cmd,
+            cwd=root,
+            creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        print(f"[api_server] scheduler started pid={_scheduler_proc.pid}", flush=True)
+    except Exception as exc:
+        print(f"[api_server] scheduler spawn failed: {exc}", flush=True)
+        _scheduler_proc = None
+
+
+def _shutdown_children() -> None:
+    """atexit hook: kill every bot we spawned + the scheduler subprocess.
+
+    Idempotent; safe to call from both the `finally` of serve() and the atexit
+    handler (whichever fires first wins). External bot instances (running on
+    their single-instance lock port) are not touched — those weren't ours.
+    """
+    global _scheduler_proc
+    try:
+        if _bot_manager is not None:
+            _bot_manager.stop_all()
+    except Exception as exc:
+        print(f"[api_server] stop_all bots failed: {exc}", flush=True)
+    if _scheduler_proc is not None and _scheduler_proc.poll() is None:
+        try:
+            _scheduler_proc.terminate()
+            try:
+                _scheduler_proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                _scheduler_proc.kill()
+        except Exception as exc:
+            print(f"[api_server] scheduler shutdown failed: {exc}", flush=True)
+    _scheduler_proc = None
+
+
 def serve(port: int | None = None, host: str = "127.0.0.1") -> None:
-    """Run the API server (blocking). Prints `__GA_READY__ port=...` once listening."""
+    """Run the API server (blocking). Prints `__GA_READY__ port=...` once listening.
+
+    Before serving, auto-spawns:
+      - every IM bot whose credentials + SDK are present (BotManager.start)
+      - the L4 reflect/scheduler.py child (if launch_options.scheduler=True)
+    On exit (KeyboardInterrupt / SIGTERM / atexit) all spawned children are killed.
+    """
     if port is None:
         port = _free_port()
     httpd = _make_server(host, port)
+    _auto_start_configured_bots()
+    _auto_start_scheduler()
+    atexit.register(_shutdown_children)
     print(f"{READY_MARKER} port={port}", flush=True)
     try:
         httpd.serve_forever()
@@ -1296,6 +1401,7 @@ def serve(port: int | None = None, host: str = "127.0.0.1") -> None:
         pass
     finally:
         httpd.server_close()
+        _shutdown_children()
 
 
 def serve_threaded(port: int | None = None) -> tuple[int, threading.Thread]:
@@ -1318,9 +1424,15 @@ def serve_threaded(port: int | None = None) -> tuple[int, threading.Thread]:
 
 def reset_state_for_tests() -> None:
     """Reset module-level singletons. Tests use this between cases."""
-    global _project_manager, _bot_manager, _started_at
+    global _project_manager, _bot_manager, _scheduler_proc, _started_at
     _project_manager = None
     _bot_manager = None
+    if _scheduler_proc is not None and _scheduler_proc.poll() is None:
+        try:
+            _scheduler_proc.kill()
+        except Exception:
+            pass
+    _scheduler_proc = None
     _started_at = time.monotonic()
 
 

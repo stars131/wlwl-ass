@@ -12,8 +12,13 @@ def iter_builtin_factories() -> Iterator[WorkerFactory]:
     from llmcore.workers.calendar_worker import CalendarFactory
     from llmcore.workers.inspiration_worker import InspirationFactory
     from llmcore.workers.mock_voice_worker import MockSTTFactory, MockTTSFactory
+    from llmcore.workers.xiaomi_voice_worker import XiaomiSTTFactory, XiaomiTTSFactory
+    from llmcore.workers.local_whisper_worker import LocalWhisperSTTFactory
     yield CalendarFactory()
     yield InspirationFactory()
     yield MockSTTFactory()
     yield MockTTSFactory()
+    yield XiaomiSTTFactory()
+    yield XiaomiTTSFactory()
+    yield LocalWhisperSTTFactory()
     # llm_worker is opt-in (needs an existing BaseSession); see workers/llm_worker.py

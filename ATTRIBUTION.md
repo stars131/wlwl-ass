@@ -161,6 +161,46 @@ history 等）不需要在此登记，它们留在 `README.md` 即可。
   enough to fit under the PRD's 500 KB cap. No analytics, no telemetry, no
   CDN fetches.
 
+### 7. faster-whisper + OpenAI Whisper (local STT fallback)
+
+- **Source / 源地址**:
+  - https://github.com/SYSTRAN/faster-whisper (CTranslate2 reimplementation)
+  - https://github.com/openai/whisper (the underlying ASR model + weights)
+- **License / 协议**:
+  - faster-whisper: MIT
+  - OpenAI Whisper model weights: MIT (research license)
+- **Borrowed Scope / 借鉴范围**: Used as the **local fallback STT engine**
+  in `llmcore/workers/local_whisper_worker.py`. When the cloud STT (Xiaomi
+  MiMo `mimo-v2-omni` audio understanding) returns an error or is
+  unreachable (HTTP 4xx/5xx, timeout, missing key, account balance
+  exhausted), the orchestrator's `transcribe` hook in
+  `launcher/voice_ws.py` retries the same audio frame against this local
+  worker. Default model is `base` (~74 MB, real-time on a 4-core CPU);
+  `WLWL_LOCAL_WHISPER_MODEL` env var supports `tiny`/`base`/`small`/
+  `medium`/`large-v3`. PyAV (bundled by faster-whisper) decodes the opus
+  bytes the browser sends so we don't need a system ffmpeg install.
+- **Our Modifications / 我们的修改**: None to the engine. We only thinly
+  wrap `WhisperModel.transcribe()` to fit the existing
+  `voice.stt.v1` worker contract: input `{audio: <base64>, format: <opus|wav>}`,
+  output `{text, confidence, is_final}`. The model is held in a process-level
+  singleton (lazy-loaded on first invocation) to avoid repeated 700 ms+
+  init costs across utterances.
+- **Borrowed On / 借鉴日期**: 2026-05-07
+- **Notes / 备注**:
+  - Optional dep, **not** in base `pyproject.toml` deps. Install via
+    `pip install -e ".[stt-local]"` or just `pip install faster-whisper`.
+    Without the package the worker degrades to ok=False with a clear
+    "faster-whisper not installed" error, and the chain falls back further
+    (or, if there's no further fallback, surfaces the error to the user).
+  - First run downloads the model from HuggingFace to `~/.cache/huggingface/`.
+    Air-gapped / offline machines can pre-place the snapshot.
+  - Whisper's CTC alignment quality on Chinese is acceptable on `base`
+    but visibly better on `small`/`medium` — users should bump the env
+    var if their machine has the headroom.
+  - License obligations: redistribution is allowed; the upstream LICENSE
+    files are included in the wheel. We carry no model weights in this
+    repository.
+
 ---
 
 ## Update Protocol / 更新规约

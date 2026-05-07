@@ -38,6 +38,13 @@ voice = [
     "soundfile>=0.12",
     "pypinyin>=0.51",
 ]
+# Local fallback STT — used when the cloud STT (xiaomi MiMo / etc.) returns
+# error or is unreachable. faster-whisper bundles CTranslate2 + PyAV so no
+# system ffmpeg is needed. The first transcribe() downloads the model
+# (~74MB for "base", ~244MB for "small") to ~/.cache/huggingface.
+stt-local = [
+    "faster-whisper>=1.2",
+]
 test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

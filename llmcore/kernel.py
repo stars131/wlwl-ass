@@ -820,6 +820,9 @@ _KIND_TO_FACTORY = {
     "inspiration": "wlwl_ass.workers.inspiration",
     "mock_stt": "wlwl_ass.workers.mock_stt",
     "mock_tts": "wlwl_ass.workers.mock_tts",
+    "xiaomi_stt": "wlwl_ass.workers.xiaomi_stt",
+    "xiaomi_tts": "wlwl_ass.workers.xiaomi_tts",
+    "local_whisper_stt": "wlwl_ass.workers.local_whisper_stt",
 }
 
 

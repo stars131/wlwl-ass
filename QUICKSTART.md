@@ -2,96 +2,72 @@
 
 > 30 秒装好、跑起来。完整文档参见 [README.md](./README.md) / [GETTING_STARTED.md](./GETTING_STARTED.md)。
 
-## 1. 装依赖
+> **2026-05 起，唯一的启动入口是 Tauri GUI**。CLI / Qt / 旧 webview shell / 桌面宠物 / Streamlit 等历史界面已全部移除。所有配置（API key、bot 凭据、权限）都在 GUI 里完成。
 
-```bash
-git clone <this-repo> && cd <this-repo>
-pip install -r requirements.txt
+## 1. 一键安装并启动
+
+Windows：
+
+```
+start_from_zero.cmd
 ```
 
-如果 `requirements.txt` 不存在，最小集合：
+或中文别名：
 
-```bash
-pip install requests beautifulsoup4
+```
+一键启动.cmd
 ```
 
-## 2. 跑一次配置向导
+它会自动：
 
-```bash
-python agentmain.py
+1. 创建 `.venv` 并装好 Python 依赖（需要 Python 3.10–3.13）
+2. 安装 GUI 所需的 Node 依赖（需要 Node.js ≥ 20.9 + Rust cargo）
+3. 拉起 Tauri GUI 主窗口
+
+第一次启动时 GUI 是空白的——打开 **API 配置** tab，添加一个 API key（OpenAI 兼容 / Anthropic / DeepSeek / Kimi / GLM / OpenRouter / 自建 relay 都行），就能开始对话。
+
+## 2. 已装好后日常启动
+
+```
+python launch.pyw
 ```
 
-**首次运行会自动检测到没有 LLM 配置并启动交互式向导。** 也可以显式触发：
+等价于直接运行 GUI；不会重新装依赖。
 
-```bash
-python -m launcher.cli_init        # 标准向导
-python agentmain.py --init         # 等价
+## 3. 自动 bot
+
+只要你在 GUI 的 **API 配置** 或 `.env` 里填了某个 IM bot 的凭据（例如飞书需要 `fs_app_id` + `fs_app_secret`），并安装了对应 SDK（`pip install lark_oapi`），下次启动 GUI 时这个 bot 会**自动在线**——不需要在任何地方勾选开关。
+
+GUI 里的 **Bots** tab 显示每个 bot 的 configured / SDK / running 状态；如果不想让某个 bot 跑，在那里点「停止」即可。
+
+## 4. 验证
+
 ```
-
-向导会问 4 个问题：
-1. **哪家 API**（OpenAI 兼容 / Anthropic）
-2. **哪个 endpoint**（官方 / DeepSeek / Kimi / GLM / OpenRouter / OAI-Free relay / 自定义 URL）
-3. **API key**（粘贴）
-4. **模型名**（带默认值）
-
-之后会做一次 3 秒连接探测（可跳过），最后写到 **`.env`**。
-
-## 3. 验证
-
-```bash
 python -m launcher.doctor          # 全量诊断（Python / 依赖 / 配置 / 权限）
-python -m launcher.metrics         # 任务 / 工具指标（首次运行可能空表）
+python -m launcher.metrics         # 任务 / 工具指标
 ```
 
-## 4. 跑起来
-
-```bash
-python agentmain.py                # CLI 交互模式
-python launch.pyw                  # 桌面 GUI（默认 Tauri，自动 fallback Qt）
-```
-
-CLI 内置斜杠命令：`/help`、`/llm`、`/permission`、`/exit`。
-
----
-
-## 配置加载优先级
+## 5. 配置加载优先级
 
 ```
-shell env < .env < ~/.wlwl-ass/config.json < <project>/.wlwl-ass/config.json < temp/launcher_api_configs.json
+shell env  <  .env  <  ~/.wlwl-ass/config.json  <  <project>/.wlwl-ass/config.json  <  temp/launcher_api_configs.json
 ```
 
-- 99% 的用户只需要 `.env`，向导会写到那里。
-- 多渠道 / mixin 故障转移 → GUI 「API 配置」 tab 写到 `temp/launcher_api_configs.json`。
-- 命令行批改 → `python -m launcher.config set <path> <value>`。
-
-## 常用一行命令
-
-```bash
-# 检查现状
-python -m launcher.cli_init --check       # 是否已配置
-python -m launcher.doctor                 # 全量体检（含 pip install 修复建议）
-python -m launcher.config list            # 当前 config_store 全貌（secret 默认掩码）
-python -m launcher.metrics --since 7d     # 近 7 天任务指标
-
-# 排错
-WLWL_ACTIVITY_LOG_OFF=1 python agentmain.py # 关闭埋点（隐私 / 调试）
-python agentmain.py --no-wizard           # 跳过首次向导（默认会自动跑）
-python agentmain.py --verbose             # 看每一轮 LLM 调用
-```
+99% 的用户在 GUI 的 **API 配置** tab 里加一条 → 自动写到 `temp/launcher_api_configs.json`。
 
 ## 常见 30 秒踩坑
 
 | 现象 | 解决 |
 |------|------|
-| 向导没出现，直接报错 | `python -m launcher.cli_init --force` |
-| 401 Unauthorized | key 复制时多了空格；用 `--init` 重跑向导 |
+| `start_from_zero.cmd` 报 "Tauri toolchain not ready" | 装 Node.js ≥20.9（`winget install OpenJS.NodeJS.LTS`）+ Rust（`https://rustup.rs/`） |
+| 401 Unauthorized | API key 复制时多了空格；在 GUI **API 配置** 里检查 |
 | 405 / 404 探测失败但保存继续 | 部分 relay 不支持 GET `/models`，对话依然能走 |
-| `No usable LLM config found` | 还没配置——跑 `python -m launcher.cli_init` 或编辑 `.env` |
-| Tauri GUI 黑屏 | `python launch.pyw --qt-legacy` |
-| 老版本 `mykey.py` 想保留 | `python -m launcher.config migrate` 一次性导入到 `~/.wlwl-ass/config.json`（**该工具下个 release 会删除**） |
+| 飞书/TG/QQ 没自动起 | 在 GUI **Bots** tab 看哪个状态：`未配置` 缺凭据；`SDK 缺失` 跑 `pip install lark_oapi`/`telegram`/`botpy`/… |
+| GUI 窗口已开，第二次点击没反应 | 单例锁端口 `19736` — 切到已开的那个窗口 |
+| 想跑 scheduler 后台任务 | GUI **设置** tab 里 `scheduler` 默认开；关掉就不再起 `reflect/scheduler.py` |
 
 ## 我现在该做什么
 
-1. 跑 `python agentmain.py`，让向导带你过一遍
-2. 跑一句 `wlwl-ass> 列出当前目录的 Python 文件`，确认整条链路通了
-3. 跑 `python -m launcher.metrics`，看自己的第一条任务记录
+1. 跑 `start_from_zero.cmd`，等 Tauri 窗口出来
+2. 进 **API 配置** tab，加一条 API key
+3. 在主聊天里发一句 `列出当前目录的 Python 文件`，确认整条链路通了

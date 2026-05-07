@@ -211,14 +211,15 @@ def check_llm_config() -> list[Check]:
             "Only placeholder keys",
             "fail",
             f"Found {len(placeholders)} session(s) but every apikey looks like a template placeholder.",
-            "Run `python -m launcher.cli_init` to set a real key, "
+            "Open the GUI's API Config tab to add a real key, "
             "or edit ~/.wlwl-ass/config.json directly.",
         ))
     else:
         out.append(Check(
             "llm.config", "No usable LLM config", "fail",
             "No API key found in shell env / .env / ~/.wlwl-ass/config.json / temp/launcher_api_configs.json.",
-            "python -m launcher.cli_init   # interactive wizard, writes .env",
+            "Launch the Tauri GUI (start_from_zero.cmd or `python launch.pyw`) "
+            "and add an entry under the API Config tab.",
         ))
     return out
 

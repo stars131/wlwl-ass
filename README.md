@@ -37,13 +37,12 @@ The core loop, 9 atomic tools, layered memory, and all LLM/bot integrations run 
 |---|:---:|:---:|:---:|---|
 | Core agent loop & 9 atomic tools | ✅ | ✅ | ✅ | Stdlib only |
 | LLM backends (Claude / GPT / Gemini / Kimi / MiniMax) | ✅ | ✅ | ✅ | HTTP, no platform deps |
-| Tauri + React GUI (`gui/`, default) | ✅ | ✅ | ✅ | Tauri 2; `bundle.targets: "all"` |
-| Qt legacy launcher (`launch.pyw --qt-legacy`) | ✅ | ✅¹ | ✅¹ | PySide6 cross-platform |
+| Tauri + React GUI (`gui/`, the only launcher) | ✅ | ✅ | ✅ | Tauri 2; `bundle.targets: "all"` |
 | `code_run` shell | PowerShell | bash | bash | Auto-selected by `os.name` |
 | Browser control (`web_scan` / `web_execute_js`) | ✅ | ✅ | ✅ | via `tmwd_cdp_bridge` Chrome extension |
 | Bots: Telegram / QQ / Feishu / WeCom / DingTalk | ✅ | ✅ | ✅ | All HTTP / WebSocket |
 | Bot: Personal WeChat (iLink protocol) | ✅ | ✅ | ✅ | Login-token; no client injection |
-| Mobile control via ADB (`memory/adb_ui.py`) | ✅² | ✅² | ✅² | Needs Android platform-tools + USB device |
+| Mobile control via ADB (`memory/adb_ui.py`) | ✅¹ | ✅¹ | ✅¹ | Needs Android platform-tools + USB device |
 | Vision API (multimodal) | ✅ | ✅ | ✅ | Plain HTTP to a Vision-capable endpoint |
 | **Windows-only skills (opt-in)** | | | | |
 | `ljqCtrl` raw keyboard / mouse | ✅ | ❌ | ❌ | Uses `win32api` / `win32con` |
@@ -51,9 +50,7 @@ The core loop, 9 atomic tools, layered memory, and all LLM/bot integrations run 
 | `procmem_scanner` process memory scanner | ✅ | ❌ | ❌ | Reads other processes' memory via Win32 APIs |
 | Desktop WeChat client driving | ✅ | ❌ | ❌ | Drives `Weixin.exe` window via win32gui |
 
-¹ The Qt legacy launcher is cross-platform via PySide6 but primary smoke-testing happens on Windows. Report regressions in [issues](https://github.com/lsdefine/GenericAgent/issues).
-
-² ADB itself is cross-platform; install platform-tools via `winget install Google.PlatformTools` / `brew install android-platform-tools` / your distro's package manager.
+¹ ADB itself is cross-platform; install platform-tools via `winget install Google.PlatformTools` / `brew install android-platform-tools` / your distro's package manager.
 
 
 ## 🧬 Self-Evolution Mechanism
@@ -98,42 +95,43 @@ After a few weeks, your agent instance will have a skill tree no one else in the
 
 ## 🚀 Quick Start
 
-> The new **Tauri + React desktop GUI** in [`gui/`](./gui/) is now the default
-> entry. `python launch.pyw` boots the Tauri app if it's available (packaged
-> binary or `npm run tauri:dev`), and falls back to the previous Qt launcher
-> automatically. Pass `--qt-legacy` to force Qt or `--legacy-shell` for the
-> original webview shell.
+> Since 2026-05, the **Tauri + React desktop GUI** in [`gui/`](./gui/) is the
+> only supported launcher. `python launch.pyw` boots the Tauri app — packaged
+> binary if present, otherwise `npm run tauri:dev`. The old CLI / Qt /
+> webview-shell / Streamlit / desktop-pet entries are gone.
 > See [`docs/architecture/overview.md`](./docs/architecture/overview.md) and
 > the [ADRs](./docs/adr/README.md) for the design.
 
-#### Method 1: Standard Installation
+#### Method 1: One-click bootstrap (Windows)
+
+```bash
+start_from_zero.cmd          # Or 一键启动.cmd — same script
+```
+
+The bootstrap creates `.venv`, installs Python + Node deps, then launches the
+GUI. First boot opens an empty window; go to the **API Config** tab to add an
+API key.
+
+#### Method 2: Standard Installation
 
 ```bash
 # 1. Clone the repo
 git clone https://github.com/lsdefine/GenericAgent.git
 cd GenericAgent
 
-# 2. Install minimal dependencies (PySide6 for the Qt main window)
-pip install requests PySide6
+# 2. Install Python dependencies (Python 3.10–3.13)
+pip install -e ".[ui]"
 
-# 3. Configure API Key (interactive wizard writes to .env)
-python -m launcher.cli_init
+# 3. Install GUI Node dependencies (Node.js >=20.9 + Rust cargo required)
+cd gui && npm ci && cd ..
 
-# 4. Launch — opens the Qt main window (sessions / bots / API config / settings)
+# 4. Launch — opens the Tauri GUI
 python launch.pyw
 ```
 
-#### Method 2: uv (for experienced Python users)
-
-If you prefer a modern Python workflow, wlwl-ass also provides a minimal `pyproject.toml`:
-
-```bash
-git clone https://github.com/lsdefine/GenericAgent.git
-cd GenericAgent
-uv pip install -e ".[ui]"        # Core + GUI dependencies
-python -m launcher.cli_init
-python launch.pyw
-```
+> Configure API keys in the GUI's **API Config** tab (or pre-populate `.env` /
+> `~/.wlwl-ass/config.json`). Bots auto-start on launch when their credentials
+> + SDK are present — no opt-in flag needed.
 
 > wlwl-ass is meant to grow its environment through the Agent itself, not by pre-installing every possible package.
 
@@ -157,13 +155,11 @@ python frontends/tgapp.py
 
 ### Alternative App Frontends
 
-Besides the default Streamlit web UI, you can also try other frontend styles:
-
-```bash
-python frontends/qtapp.py                # Qt-based desktop app
-```
-
-> Other frontend variants (`stapp2.py`, `desktop_pet.pyw` v1) are deprecated and kept only for backward compatibility — see file headers.
+The Tauri GUI is the only desktop interface — the previous standalone
+`qtapp.py` / `stapp.py` / `desktop_pet.pyw` frontends were removed in 2026-05.
+Bot connectors under `frontends/` (`tgapp.py`, `fsapp.py`, `qqapp.py`, etc.)
+are still there but are auto-spawned by the GUI when their credentials are
+configured — you don't run them by hand.
 
 ### Common Chat Commands
 
@@ -287,13 +283,12 @@ MIT License — see [LICENSE](LICENSE)
 |---|:---:|:---:|:---:|---|
 | 核心 Agent Loop & 9 个原子工具 | ✅ | ✅ | ✅ | 仅依赖标准库 |
 | LLM 后端（Claude / GPT / Gemini / Kimi / MiniMax） | ✅ | ✅ | ✅ | 纯 HTTP，无平台依赖 |
-| Tauri + React GUI（`gui/`，默认入口） | ✅ | ✅ | ✅ | Tauri 2；`bundle.targets: "all"` |
-| Qt 老版 launcher（`launch.pyw --qt-legacy`） | ✅ | ✅¹ | ✅¹ | PySide6 跨平台 |
+| Tauri + React GUI（`gui/`，唯一入口） | ✅ | ✅ | ✅ | Tauri 2；`bundle.targets: "all"` |
 | `code_run` shell | PowerShell | bash | bash | 按 `os.name` 自动切换 |
 | 浏览器控制（`web_scan` / `web_execute_js`） | ✅ | ✅ | ✅ | 通过 `tmwd_cdp_bridge` Chrome 扩展 |
 | Bot：Telegram / QQ / 飞书 / 企微 / 钉钉 | ✅ | ✅ | ✅ | HTTP / WebSocket |
 | Bot：个人微信（iLink 协议） | ✅ | ✅ | ✅ | Token 登录，不注入客户端 |
-| 手机控制（`memory/adb_ui.py`） | ✅² | ✅² | ✅² | 需 Android platform-tools 与 USB 设备 |
+| 手机控制（`memory/adb_ui.py`） | ✅¹ | ✅¹ | ✅¹ | 需 Android platform-tools 与 USB 设备 |
 | Vision API（多模态） | ✅ | ✅ | ✅ | 调用具备视觉能力的 HTTP 端点 |
 | **仅 Windows 技能（按需触发）** | | | | |
 | `ljqCtrl` 原始键鼠控制 | ✅ | ❌ | ❌ | `win32api` / `win32con` |
@@ -301,9 +296,7 @@ MIT License — see [LICENSE](LICENSE)
 | `procmem_scanner` 进程内存扫描 | ✅ | ❌ | ❌ | Win32 API 读取其他进程内存 |
 | 微信桌面客户端驱动 | ✅ | ❌ | ❌ | win32gui 控制 `Weixin.exe` 窗口 |
 
-¹ Qt 老版 launcher 通过 PySide6 跨平台运行，但主要冒烟测试发生在 Windows 上，回归请走 [Issues](https://github.com/lsdefine/GenericAgent/issues)。
-
-² ADB 本身跨平台，安装方式：`winget install Google.PlatformTools` / `brew install android-platform-tools` / 各发行版包管理器。
+¹ ADB 本身跨平台，安装方式：`winget install Google.PlatformTools` / `brew install android-platform-tools` / 各发行版包管理器。
 
 ## 🧬 自我进化机制
 
@@ -349,36 +342,39 @@ MIT License — see [LICENSE](LICENSE)
 
 ## 🚀 快速开始
 
-#### 方法一：标准安装
+> 2026-05 起，**Tauri + React 桌面 GUI**（[`gui/`](./gui/) 目录）是唯一启动入口。
+> `python launch.pyw` 启动 Tauri（优先打包好的 binary，否则 `npm run tauri:dev`）。
+> 旧的 CLI / Qt / webview shell / Streamlit / 桌面宠物入口已全部移除。
+
+#### 方法一：一键启动（Windows）
+
+```bash
+start_from_zero.cmd          # 或 一键启动.cmd —— 同一脚本
+```
+
+脚本会自动建 `.venv`、装 Python + Node 依赖、然后拉起 GUI。第一次启动是空窗口，
+进 **API 配置** tab 加一条 API key 即可开始对话。
+
+#### 方法二：标准安装
 
 ```bash
 # 1. 克隆仓库
 git clone https://github.com/lsdefine/GenericAgent.git
 cd GenericAgent
 
-# 2. 安装最小依赖（PySide6 用于 Qt 主窗口）
-pip install requests PySide6
+# 2. 安装 Python 依赖（Python 3.10–3.13）
+pip install -e ".[ui]"
 
-# 3. 配置 API Key（交互式向导写入 .env）
-python -m launcher.cli_init
+# 3. 安装 GUI 的 Node 依赖（需要 Node.js >=20.9 + Rust cargo）
+cd gui && npm ci && cd ..
 
-# 4. 启动 —— 打开 Qt 主窗口（会话 / Bots / API 配置 / 设置 四标签页）
+# 4. 启动 —— 打开 Tauri GUI
 python launch.pyw
 ```
 
-#### 方法二：uv 快速安装（熟悉 Python 的用户）
-
-如果你习惯现代 Python 工作流，wlwl-ass 也提供了一个最小化的 `pyproject.toml`：
-
-```bash
-git clone https://github.com/lsdefine/GenericAgent.git
-cd GenericAgent
-uv pip install -e ".[ui]"        # 核心 + GUI 依赖
-python -m launcher.cli_init
-python launch.pyw
-```
-
-> wlwl-ass 更推荐由 Agent 在使用中自举环境，而不是预先手动装完整依赖。
+> 配置 API key 在 GUI **API 配置** tab 里完成（也可手编 `.env` /
+> `~/.wlwl-ass/config.json`）。Bot 凭据齐全 + SDK 装好后，下次启动 GUI 自动在线，
+> 无需任何 opt-in 开关。
 
 完整引导流程见 [GETTING_STARTED.md](GETTING_STARTED.md)。
 
@@ -474,13 +470,10 @@ dingtalk_allowed_users = ["your_staff_id"]  # 或 ['*']
 
 ### 其他 App 前端
 
-除默认的 Streamlit Web UI 外，还可以尝试不同风格的前端：
-
-```bash
-python frontends/qtapp.py                # 基于 Qt 的桌面应用
-```
-
-> 其它前端变体（`stapp2.py`、`desktop_pet.pyw` v1）已弃用，仅保留向后兼容，详见文件顶部说明。
+Tauri GUI 是唯一桌面入口——以前的 `qtapp.py` / `stapp.py` / `desktop_pet.pyw`
+独立前端已于 2026-05 移除。`frontends/` 下的 bot 连接器（`tgapp.py`、
+`fsapp.py`、`qqapp.py` 等）继续保留，但由 GUI 在凭据齐全时**自动拉起**，
+不需要手动跑。
 
 ### 通用聊天命令
 

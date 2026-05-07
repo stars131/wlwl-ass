@@ -7,13 +7,10 @@ import os
 
 CONFIG_FILE = "launcher_options.json"
 
+# Bot 启动开关已被移除：bot 的开/关由「凭据齐全 + SDK 装好」自动决定，
+# 由 launcher.api_server._auto_start_configured_bots 在 GUI 启动时统一处理。
+# 用户如需临时停掉某个 bot，使用 GUI 的 Bots tab。
 DEFAULT_OPTIONS = {
-    "tg": False,
-    "qq": False,
-    "feishu": False,
-    "wecom": False,
-    "dingtalk": False,
-    "wechat": False,
     "scheduler": True,
     "llm_no": 0,
     "permission_mode": "auto",
@@ -22,7 +19,6 @@ DEFAULT_OPTIONS = {
     "autonomous_enabled": False,
 }
 
-BOT_KEYS = ("tg", "qq", "feishu", "wecom", "dingtalk", "wechat")
 PROJECT_OPTION_KEYS = (
     "llm_no",
     "permission_mode",
@@ -41,7 +37,7 @@ def normalize_options(options=None):
     raw = dict(DEFAULT_OPTIONS)
     raw.update(options or {})
     out = {}
-    for key in (*BOT_KEYS, "scheduler", "use_project_context", "autonomous_enabled"):
+    for key in ("scheduler", "use_project_context", "autonomous_enabled"):
         value = raw.get(key)
         if isinstance(value, str):
             value = value.strip().lower() in {"1", "true", "yes", "on"}

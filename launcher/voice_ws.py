@@ -323,10 +323,46 @@ def main(argv: list[str] | None = None) -> int:
         k.add_worker({"name": "calendar", "kind": "calendar"})
     if not any(w.kind == "inspiration" for w in k.list_workers()):
         k.add_worker({"name": "inspiration", "kind": "inspiration"})
-    if not any(w.kind in ("mock_stt", "minimax_stt") for w in k.list_workers()):
-        k.add_worker({"name": "stt", "kind": "mock_stt"})
-    if not any(w.kind in ("mock_tts", "minimax_tts") for w in k.list_workers()):
-        k.add_worker({"name": "tts", "kind": "mock_tts"})
+
+    # ── Worker selection + fallback chain ──
+    # The kernel's dispatch() already iterates candidates in insertion order
+    # and returns the first ok=True response, so we just register workers in
+    # priority order and the fallback "just works" — including circuit-
+    # breaker skipping of a repeatedly-failing primary.
+    #
+    # Priority for STT:
+    #   1. xiaomi_stt          (if WLWL_XIAOMI_API_KEY is set)
+    #   2. local_whisper_stt   (if faster-whisper is installed)
+    #   3. mock_stt            (last resort, dev-only)
+    has_xiaomi = bool(os.environ.get("WLWL_XIAOMI_API_KEY", "").strip())
+    try:
+        import faster_whisper  # noqa: F401 — probe only
+        has_local_whisper = True
+    except Exception:
+        has_local_whisper = False
+
+    if not any(w.kind in ("xiaomi_stt", "local_whisper_stt",
+                          "mock_stt", "minimax_stt") for w in k.list_workers()):
+        added: list[str] = []
+        if has_xiaomi:
+            k.add_worker({"name": "stt_primary", "kind": "xiaomi_stt"})
+            added.append("xiaomi_stt")
+        if has_local_whisper:
+            k.add_worker({"name": "stt_fallback", "kind": "local_whisper_stt"})
+            added.append("local_whisper_stt")
+        if not added:
+            k.add_worker({"name": "stt", "kind": "mock_stt"})
+            added.append("mock_stt")
+        log.info("STT chain (in fallback order): %s", " -> ".join(added))
+
+    # TTS: xiaomi if key present, else mock. (No local TTS option yet —
+    # high-quality offline TTS adds a much bigger model + dep footprint than
+    # offline STT, so we keep it cloud-only for now.)
+    if not any(w.kind in ("mock_tts", "minimax_tts", "xiaomi_tts")
+               for w in k.list_workers()):
+        tts_kind = "xiaomi_tts" if has_xiaomi else "mock_tts"
+        k.add_worker({"name": "tts", "kind": tts_kind})
+        log.info("TTS worker: %s", tts_kind)
 
     try:
         asyncio.run(serve_forever(host=args.host, port=args.port, auth_token=args.auth_token, kernel=k))

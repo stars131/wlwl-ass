@@ -314,107 +314,25 @@ def format_duration(seconds):
     return f"{int(minutes)}m {int(sec):02d}s"
 
 
-class InteractiveCLI:
-    def __init__(self, agent, show_duration=True):
-        self.agent = agent
-        self.show_duration = show_duration
-        self.commands = SharedCommandHandler(agent)
-
-    def print_banner(self):
-        llm = self.agent.get_llm_name() if self.agent.llmclient else '未配置'
-        ctx_files = getattr(getattr(self.agent, 'project_context', None), 'files', []) or []
-        print('wlwl-ass CLI')
-        print(f'Project: {self.agent.project_root or os.getcwd()}')
-        print(f'LLM: [{self.agent.llm_no}] {llm}')
-        print(f'Permission: {self.agent.permission_mode}')
-        print(f'Context files: {len(ctx_files)}')
-        print('Type /help for commands. Ctrl+D exits.')
-
-    def run(self):
-        try: import readline
-        except Exception: pass
-        self.agent.inc_out = True
-        self.print_banner()
-        while True:
-            try:
-                q = input('ga> ').strip()
-            except EOFError:
-                print('\nBye.')
-                break
-            except KeyboardInterrupt:
-                if self.agent.is_running:
-                    self.agent.abort()
-                print('\n[Interrupted]')
-                continue
-            if not q:
-                continue
-            if q.startswith('/'):
-                result = self.commands.handle(q)
-                if result.handled:
-                    print(result.message or '')
-                    if result.should_exit:
-                        break
-                    continue
-                q = result.query or q
-            started = time.monotonic()
-            try:
-                dq = self.agent.put_task(q, source='user')
-                while True:
-                    item = dq.get()
-                    if 'next' in item: print(item['next'], end='', flush=True)
-                    if 'done' in item:
-                        print()
-                        break
-            except KeyboardInterrupt:
-                self.agent.abort()
-                print('\n[Interrupted]')
-            finally:
-                if self.show_duration:
-                    print(f'[Done in {format_duration(time.monotonic() - started)}]')
-
-
 if __name__ == '__main__':
     import argparse
     from datetime import datetime
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description='Internal agent entry: headless --task / --reflect / --bg modes only. '
+                    'For interactive use, launch the GUI via start_from_zero.cmd or `python launch.pyw`.'
+    )
     parser.add_argument('--task', metavar='IODIR', help='一次性任务模式(文件IO)')
     parser.add_argument('--reflect', metavar='SCRIPT', help='反射模式：加载监控脚本，check()触发时发任务')
     parser.add_argument('--input', help='prompt')
     parser.add_argument('--llm_no', type=int, default=0)
-    parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--bg', action='store_true', help='popen, print PID, exit')
-    parser.add_argument('--permission-mode', choices=['ask', 'auto', 'read-only', 'dangerous'], default=None)
-    parser.add_argument('--project-root')
-    parser.add_argument('--no-project-context', action='store_true')
-    parser.add_argument('--show-duration', dest='show_duration', action='store_true', default=True)
-    parser.add_argument('--no-show-duration', dest='show_duration', action='store_false')
-    parser.add_argument('--no-wizard', action='store_true',
-                        help='跳过首次运行配置向导（即使没配置 LLM 也直接进入 CLI 报错）')
-    parser.add_argument('--init', action='store_true',
-                        help='强制运行配置向导后退出（等价 python -m launcher.cli_init --force）')
     args = parser.parse_args()
 
-    # 显式触发向导：python agentmain.py --init
-    if args.init:
-        from launcher.cli_init import main as _wizard_main
-        sys.exit(_wizard_main(['--force']))
-
-    # 首次运行：检测到 LLM 没配且是交互式 TTY，则自动跑一次向导
-    if not args.no_wizard and not (args.task or args.reflect or args.bg):
-        try:
-            from launcher import onboarding
-            from launcher import dotenv_shim
-            dotenv_shim.bootstrap()  # 先把 .env 装进 environ，再判 status
-            _st = onboarding.status()
-        except Exception as _e:
-            _st = {"needs_setup": True, "reason": f"status probe failed: {_e}"}
-        if _st.get("needs_setup") and sys.stdin and sys.stdin.isatty():
-            print(f"\n[GA] No usable LLM config detected ({_st.get('reason') or ''}).")
-            print(f"[GA] Running first-run wizard. Skip with --no-wizard.\n")
-            from launcher.cli_init import main as _wizard_main
-            rc = _wizard_main([])
-            if rc != 0:
-                sys.exit(rc)
+    if not (args.task or args.reflect or args.bg):
+        print('agentmain.py is now an internal entry. Use start_from_zero.cmd '
+              'or `python launch.pyw` to start the Tauri GUI. Headless modes: '
+              '--task / --reflect / --bg.', file=sys.stderr)
+        sys.exit(2)
 
     if args.bg:
         import subprocess, platform
@@ -431,11 +349,10 @@ if __name__ == '__main__':
 
     agent = GeneraticAgent()
     agent.next_llm(args.llm_no)
-    agent.verbose = args.verbose
-    interactive_mode = not (args.task or args.reflect)
-    permission_mode = args.permission_mode or ('ask' if interactive_mode else 'read-only')
-    agent.configure_cli(permission_mode=permission_mode, project_root=args.project_root,
-                        use_project_context=not args.no_project_context, interactive=interactive_mode)
+    # 头less 模式（--task / --reflect）走 read-only 权限，project context 关闭：
+    # 这些是后台批处理 / 调度场景，不应该自由动用户的项目目录。
+    agent.configure_cli(permission_mode='read-only', project_root=None,
+                        use_project_context=False, interactive=False)
     threading.Thread(target=agent.run, daemon=True).start()
 
     if args.task:
@@ -474,7 +391,7 @@ if __name__ == '__main__':
                 except Exception as e: print(f'[Reflect] reload error: {e}')
             time.sleep(getattr(mod, 'INTERVAL', 5))
             try: task = mod.check()
-            except Exception as e: 
+            except Exception as e:
                 print(f'[Reflect] check() error: {e}'); continue
             if task is None: continue
             print(f'[Reflect] triggered: {task[:80]}')
@@ -495,5 +412,3 @@ if __name__ == '__main__':
                 try: on_done(result)
                 except Exception as e: print(f'[Reflect] on_done error: {e}')
             if getattr(mod, 'ONCE', False): print('[Reflect] ONCE=True, exiting.'); break
-    else:
-        InteractiveCLI(agent, show_duration=args.show_duration).run()

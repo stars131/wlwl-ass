@@ -54,15 +54,18 @@ python3 --version
 
 ### 配置 API Key
 
-wlwl-ass 的首次配置走 `.env` 文件 + 交互式向导，**不用编辑 Python 代码**：
+wlwl-ass 的 API key 全部在 **GUI** 里配置——首次启动 GUI 是空白的，进 **API 配置** tab 加一条即可。
+
+也可以手编 `.env`（适合命令行用户）：
 
 ```bash
-python -m launcher.cli_init
+# .env
+OPENAI_API_KEY=sk-你的密钥
+OPENAI_BASE_URL=http://你的API地址:端口/v1
+OPENAI_MODEL=模型名称
 ```
 
-向导会问 4 个问题（API 提供商 / endpoint / API key / 模型名），探测一下连通性，然后写到 `.env`。
-
-> 多渠道 / mixin 故障转移 / Claude / Kimi / MiniMax / CRS 等高级配置走 GUI 「API 配置」 tab（保存到 `temp/launcher_api_configs.json`，含全部高级字段如 `reasoning_effort`、`thinking_type`、`fake_cc_system_prompt`）。配置加载优先级见 [docs/CONFIG.md](docs/CONFIG.md)。
+> 多渠道 / mixin 故障转移 / Claude / Kimi / MiniMax / CRS 等高级配置走 GUI **API 配置** tab（保存到 `temp/launcher_api_configs.json`，含全部高级字段如 `reasoning_effort`、`thinking_type`、`fake_cc_system_prompt`）。配置加载优先级见 [docs/CONFIG.md](docs/CONFIG.md)。
 
 ### 配置示例（手编 .env）
 
@@ -91,22 +94,31 @@ ANTHROPIC_MODEL=claude-opus-4-7
 
 ## 3. 初次启动
 
-终端里进入项目文件夹，运行：
+终端里进入项目文件夹，运行 Tauri GUI（**唯一启动入口**，已无 CLI 模式）：
 
 ```bash
 cd 你的解压路径
-python3 agentmain.py
+python launch.pyw
 ```
 
-这就是**命令行模式**，已经可以用了。你会看到一个输入提示符，直接打字发送任务即可。
+Windows 用户也可以直接双击 `start_from_zero.cmd`（或中文别名 `一键启动.cmd`），脚本会自动建 `.venv`、装依赖、然后拉起 GUI。
+
+启动后会出现 wlwl-ass 主窗口，含 4 个标签页：
+
+| 标签 | 用途 |
+| --- | --- |
+| **会话** | 多会话管理：新建/启动/停止/打开 Streamlit、置顶、删除 |
+| **Bots** | 6 个聊天平台 bot（Telegram/QQ/飞书/企业微信/钉钉/微信）的状态 + 启停 |
+| **API 配置** | 多渠道凭据 CRUD + Profile 切换（cc-switch 风格一键换档） |
+| **设置** | 全局默认值（默认 LLM、权限模式、项目根、L4 调度等） |
+
+> 第一次启动建议先到 **API 配置** tab 加一组凭据，然后到 **会话** 新建一个项目开聊。
 
 试试你的第一个任务：
 
 ```
 帮我在桌面创建一个 hello.txt，内容是 Hello World
 ```
-
-> 💡 Windows 上如果 `python3` 不识别，换成 `python agentmain.py`。
 
 ---
 
@@ -125,26 +137,9 @@ Agent 会自己读代码、找出需要的包、全部装好。
 > pip install requests
 > ```
 
-### 升级到图形界面
+### 自动 bot
 
-依赖装完后，就可以用 GUI 模式了：
-
-```bash
-python3 launch.pyw
-```
-
-启动后会出现 wlwl-ass 主窗口，含 4 个标签页：
-
-| 标签 | 用途 |
-| --- | --- |
-| **会话** | 多会话管理：新建/启动/停止/打开 Streamlit、置顶、删除 |
-| **Bots** | 6 个聊天平台 bot（Telegram/QQ/飞书/企业微信/钉钉/微信）的状态 + 启停 |
-| **API 配置** | 多渠道凭据 CRUD + Profile 切换（cc-switch 风格一键换档） |
-| **设置** | 全局默认值（默认 LLM、权限模式、项目根、L4 调度等） |
-
-> 第一次启动建议先到 **API 配置** 标签页加一组凭据，然后到 **会话** 新建一个项目开聊。
->
-> 老版的 webview 浮窗仍可通过 `python launch.pyw --legacy-shell` 启动（向后兼容）。
+只要你在 GUI 的 **API 配置** 或 `.env` 里配齐某个 IM bot 的凭据 + 装好 SDK，**下次启动 GUI 时这个 bot 自动在线**——不需要在任何地方勾选开关。GUI 的 **Bots** tab 显示每个 bot 的 configured / SDK / running 状态，需要临时停掉就在那里点「停止」。
 
 ### 可选：让 Agent 帮你做的事
 
