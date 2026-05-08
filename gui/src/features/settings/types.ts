@@ -7,12 +7,6 @@
 import { z } from 'zod';
 
 export const settingsSchema = z.object({
-  tg: z.boolean(),
-  qq: z.boolean(),
-  feishu: z.boolean(),
-  wecom: z.boolean(),
-  dingtalk: z.boolean(),
-  wechat: z.boolean(),
   scheduler: z.boolean(),
   llm_no: z.number().int(),
   permission_mode: z.string(),

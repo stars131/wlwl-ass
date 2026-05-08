@@ -7,15 +7,6 @@ import { DoctorPanel } from '@/features/doctor';
 import { useSettings, usePatchSettings } from '../hooks/useSettings';
 import { PERMISSION_MODES, type Settings } from '../types';
 
-const BOT_KEYS: { key: keyof Settings; label: string }[] = [
-  { key: 'tg', label: 'Telegram' },
-  { key: 'qq', label: 'QQ' },
-  { key: 'feishu', label: '飞书' },
-  { key: 'wecom', label: '企业微信' },
-  { key: 'dingtalk', label: '钉钉' },
-  { key: 'wechat', label: '微信' },
-];
-
 /**
  * Settings tab — global launcher options. Local form state mirrors the
  * server snapshot; "保存" submits the diff via PUT /api/settings (which
@@ -119,22 +110,6 @@ export function SettingsPage(): JSX.Element {
           onChange={(v) => update('scheduler', v)}
           label="启用 L4 任务调度器"
         />
-      </Group>
-
-      <Group title="启动时拉起的 Bot">
-        <p className="text-xs text-muted-foreground -mt-2">
-          凭据请在 「API 配置」 / 「Bot 凭据」 卡片里编辑；本页只控制启动时是否自动起。
-        </p>
-        <div className="grid grid-cols-2 gap-2">
-          {BOT_KEYS.map((b) => (
-            <Toggle
-              key={b.key}
-              checked={Boolean(draft[b.key])}
-              onChange={(v) => update(b.key, v as never)}
-              label={b.label}
-            />
-          ))}
-        </div>
       </Group>
 
       <div className="flex items-center justify-end gap-2 sticky bottom-0 bg-background py-2 border-t border-border">
