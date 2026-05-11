@@ -36,6 +36,45 @@ export const projectsListSchema = z.object({
 });
 export type ProjectsList = z.infer<typeof projectsListSchema>;
 
+export const requestModeSchema = z.enum(['auto', 'chat', 'task', 'canvas']);
+export type RequestMode = z.infer<typeof requestModeSchema>;
+
+export const assistantModeSchema = z.enum(['chat', 'task', 'canvas', 'task_canvas']);
+export type AssistantMode = z.infer<typeof assistantModeSchema>;
+
+export const chatArtifactSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  kind: z.string().default('markdown'),
+  source: z.string().optional(),
+  content: z.string().optional().default(''),
+  path: z.string().optional(),
+  artifact_path: z.string().optional(),
+  created_at: z.string().optional(),
+});
+export type ChatArtifact = z.infer<typeof chatArtifactSchema>;
+
+export const taskStepSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  status: z.enum(['pending', 'running', 'done', 'error', 'aborted']).default('pending'),
+});
+export type TaskStep = z.infer<typeof taskStepSchema>;
+
+export const taskRunSchema = z.object({
+  steps: z.array(taskStepSchema).default([]),
+});
+export type TaskRun = z.infer<typeof taskRunSchema>;
+
+export const intentInfoSchema = z.object({
+  requested_mode: requestModeSchema.default('auto'),
+  mode: assistantModeSchema.default('chat'),
+  intent: z.string().default('conversation'),
+  confidence: z.number().optional(),
+  signals: z.record(z.boolean()).optional(),
+});
+export type IntentInfo = z.infer<typeof intentInfoSchema>;
+
 export const chatMessageSchema = z.object({
   id: z.string(),
   seq: z.number().int(),
@@ -44,6 +83,12 @@ export const chatMessageSchema = z.object({
   status: z.enum(['running', 'done', 'error', 'aborted']).default('done'),
   created_at: z.string(),
   updated_at: z.string().optional(),
+  requested_mode: requestModeSchema.optional(),
+  mode: assistantModeSchema.optional(),
+  intent: intentInfoSchema.optional(),
+  task: taskRunSchema.nullable().optional(),
+  artifacts: z.array(chatArtifactSchema).optional().default([]),
+  debug_content: z.string().optional().default(''),
 });
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 

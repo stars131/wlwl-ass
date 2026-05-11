@@ -18,6 +18,7 @@ Design rules:
 """
 from __future__ import annotations
 
+import concurrent.futures
 import importlib.util
 import json
 import os
@@ -27,7 +28,7 @@ import sys
 import urllib.request
 import urllib.error
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Iterable, Literal
 
 # Re-use the bot SDK manifest so doctor and the bots tab can never disagree
 # about what counts as "configured" or "installed".
@@ -402,18 +403,55 @@ def _probe_url(url: str, *, timeout: float) -> tuple[bool, str]:
 # ─── Composition + entry points ──────────────────────────────────────────
 
 
+CheckFn = Callable[[], Check | Iterable[Check]]
+
+
+def _as_checks(value: Check | Iterable[Check]) -> list[Check]:
+    if isinstance(value, Check):
+        return [value]
+    return [c for c in value if isinstance(c, Check)]
+
+
+def _run_check_group(name: str, fn: CheckFn) -> list[Check]:
+    try:
+        return _as_checks(fn())
+    except Exception as exc:
+        return [Check(
+            f"doctor.{name}",
+            f"Doctor check failed: {name}",
+            "fail",
+            f"{type(exc).__name__}: {exc}",
+            "Open the Settings diagnostics log or run `python -m launcher.doctor --json` for details.",
+        )]
+
+
 def run_diagnostics(*, include_network: bool = False) -> dict[str, Any]:
     report = Report(project_root=_project_root())
-    report.add(check_python_version())
-    for c in check_core_deps(): report.add(c)
-    for c in check_gui_deps(): report.add(c)
-    for c in check_tauri_toolchain(): report.add(c)
-    for c in check_llm_config(): report.add(c)
-    for c in check_bots(): report.add(c)
-    for c in check_paths(): report.add(c)
-    for c in check_mcp(): report.add(c)
+    groups: list[tuple[str, CheckFn]] = [
+        ("python_version", check_python_version),
+        ("core_deps", check_core_deps),
+        ("gui_deps", check_gui_deps),
+        ("tauri_toolchain", check_tauri_toolchain),
+        ("llm_config", check_llm_config),
+        ("bots", check_bots),
+        ("paths", check_paths),
+        ("mcp", check_mcp),
+    ]
     if include_network:
-        for c in check_network(): report.add(c)
+        groups.append(("network", check_network))
+
+    results: list[list[Check]] = [[] for _ in groups]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(groups) or 1)) as pool:
+        future_to_idx = {
+            pool.submit(_run_check_group, name, fn): idx
+            for idx, (name, fn) in enumerate(groups)
+        }
+        for future in concurrent.futures.as_completed(future_to_idx):
+            results[future_to_idx[future]] = future.result()
+
+    for group_results in results:
+        for c in group_results:
+            report.add(c)
 
     summary = {"ok": 0, "warn": 0, "fail": 0, "info": 0}
     for c in report.checks:

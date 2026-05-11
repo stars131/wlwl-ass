@@ -25,6 +25,110 @@ READY_TIMEOUT_S = 20.0
 STOP_TIMEOUT_S = 5.0
 
 TAG_PATS = [r"<" + t + r">.*?</" + t + r">" for t in ("thinking", "summary", "tool_use", "file_content")]
+REQUEST_MODES = {"auto", "chat", "task", "canvas"}
+TEXT_EXTS = {
+    ".bat",
+    ".cmd",
+    ".css",
+    ".csv",
+    ".html",
+    ".js",
+    ".json",
+    ".jsx",
+    ".log",
+    ".md",
+    ".py",
+    ".rs",
+    ".sh",
+    ".sql",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+CANVAS_TEXT_LIMIT = 160_000
+
+TASK_KEYWORDS = (
+    "修复",
+    "实现",
+    "落地",
+    "更新",
+    "同步",
+    "提交",
+    "推送",
+    "运行",
+    "启动",
+    "停止",
+    "安装",
+    "修改",
+    "删除",
+    "创建",
+    "配置",
+    "保存",
+    "执行",
+    "部署",
+    "测试",
+    "验证",
+    "重构",
+    "接入",
+    "fix",
+    "implement",
+    "update",
+    "sync",
+    "commit",
+    "push",
+    "run",
+    "start",
+    "stop",
+    "install",
+    "delete",
+    "deploy",
+    "test",
+    "refactor",
+)
+CANVAS_KEYWORDS = (
+    "方案",
+    "prd",
+    "文档",
+    "报告",
+    "表格",
+    "页面",
+    "原型",
+    "canvas",
+    "成果",
+    "设计",
+    "写一份",
+    "生成一份",
+    "整理成",
+    "readme",
+    "markdown",
+    "plan",
+    "proposal",
+    "document",
+    "report",
+    "table",
+    "prototype",
+)
+CHAT_KEYWORDS = (
+    "什么",
+    "为什么",
+    "解释",
+    "分析",
+    "建议",
+    "怎么看",
+    "能不能",
+    "是否",
+    "区别",
+    "how",
+    "what",
+    "why",
+    "explain",
+    "analyze",
+    "suggest",
+)
 
 
 def _now() -> str:
@@ -47,6 +151,190 @@ def _build_done_text(raw_text: str) -> str:
     if files:
         body = (body + "\n\n" if body else "") + "\n".join(f"生成文件: {p}" for p in files)
     return body or "..."
+
+
+def _classify_intent(text: str, requested_mode: str = "auto") -> dict[str, Any]:
+    requested = requested_mode if requested_mode in REQUEST_MODES else "auto"
+    lowered = (text or "").lower()
+    has_task = any(k.lower() in lowered for k in TASK_KEYWORDS)
+    has_canvas = any(k.lower() in lowered for k in CANVAS_KEYWORDS)
+    has_chat = any(k.lower() in lowered for k in CHAT_KEYWORDS)
+
+    if requested == "chat":
+        mode = "chat"
+    elif requested == "task":
+        mode = "task_canvas" if has_canvas else "task"
+    elif requested == "canvas":
+        mode = "task_canvas" if has_task else "canvas"
+    elif has_task and has_canvas:
+        mode = "task_canvas"
+    elif has_task:
+        mode = "task"
+    elif has_canvas:
+        mode = "canvas"
+    else:
+        mode = "chat"
+
+    confidence = 0.82 if requested != "auto" else 0.62
+    if requested == "auto":
+        if has_task or has_canvas:
+            confidence = 0.78
+        if has_chat and not (has_task or has_canvas):
+            confidence = 0.74
+
+    if mode in ("task", "task_canvas"):
+        intent = "operation"
+    elif mode == "canvas":
+        intent = "artifact"
+    else:
+        intent = "conversation"
+
+    return {
+        "requested_mode": requested,
+        "mode": mode,
+        "intent": intent,
+        "confidence": confidence,
+        "signals": {
+            "task": has_task,
+            "canvas": has_canvas,
+            "chat": has_chat,
+        },
+    }
+
+
+def _make_task_steps(mode: str, phase: str = "running") -> list[dict[str, str]]:
+    if mode not in ("task", "task_canvas"):
+        return []
+    execute_status = "running" if phase == "running" else phase
+    steps = [
+        {"id": "understand", "label": "理解需求", "status": "done"},
+        {"id": "execute", "label": "执行操作", "status": execute_status},
+    ]
+    if mode == "task_canvas":
+        artifact_status = "pending" if phase == "running" else phase
+        steps.append({"id": "artifact", "label": "整理成果", "status": artifact_status})
+    finish_status = "pending" if phase == "running" else phase
+    steps.append({"id": "finish", "label": "输出结果", "status": finish_status})
+    return steps
+
+
+def _artifact_kind(path_or_title: str) -> str:
+    ext = os.path.splitext(path_or_title.lower())[1]
+    if ext in (".md", ".markdown"):
+        return "markdown"
+    if ext in (".html", ".htm"):
+        return "html"
+    if ext in (".json", ".yaml", ".yml", ".toml"):
+        return "config"
+    if ext in TEXT_EXTS:
+        return "code"
+    return "file"
+
+
+def _read_artifact_text(path: str) -> str:
+    ext = os.path.splitext(path.lower())[1]
+    if ext not in TEXT_EXTS:
+        return ""
+    try:
+        if os.path.getsize(path) > CANVAS_TEXT_LIMIT:
+            return ""
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def _artifact_dir(base_dir: str, project_id: str) -> str:
+    path = os.path.join(base_dir, "temp", "project_artifacts", project_id)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _persist_artifact(base_dir: str, project_id: str, artifact: dict[str, Any]) -> dict[str, Any]:
+    path = os.path.join(_artifact_dir(base_dir, project_id), f"{artifact['id']}.json")
+    artifact["artifact_path"] = path
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(artifact, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+    return artifact
+
+
+def _summarize_for_chat(text: str, limit: int = 700) -> str:
+    cleaned = _strip_files(_clean_reply(text))
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    picked: list[str] = []
+    total = 0
+    for line in lines:
+        if line.startswith("#"):
+            continue
+        picked.append(line)
+        total += len(line)
+        if total >= limit or len(picked) >= 5:
+            break
+    summary = "\n".join(picked).strip()
+    if len(summary) > limit:
+        summary = summary[:limit].rstrip() + "..."
+    return summary
+
+
+def _build_done_payload(
+    *,
+    base_dir: str,
+    project_id: str,
+    assistant_id: str,
+    raw_text: str,
+    mode: str,
+) -> dict[str, Any]:
+    cleaned = _clean_reply(raw_text)
+    body = _strip_files(cleaned)
+    file_paths = [p for p in re.findall(r"\[FILE:([^\]]+)\]", raw_text or "") if os.path.exists(p)]
+    artifacts: list[dict[str, Any]] = []
+
+    if mode in ("canvas", "task_canvas"):
+        artifact = {
+            "id": f"{assistant_id}-canvas",
+            "title": "会话成果",
+            "kind": "markdown",
+            "source": "assistant",
+            "content": body or cleaned,
+            "created_at": _now(),
+        }
+        artifacts.append(_persist_artifact(base_dir, project_id, artifact))
+
+    for idx, file_path in enumerate(file_paths, 1):
+        title = os.path.basename(file_path) or f"artifact-{idx}"
+        artifact = {
+            "id": f"{assistant_id}-file-{idx}",
+            "title": title,
+            "kind": _artifact_kind(file_path),
+            "source": "file",
+            "path": file_path,
+            "content": _read_artifact_text(file_path),
+            "created_at": _now(),
+        }
+        artifacts.append(_persist_artifact(base_dir, project_id, artifact))
+
+    if mode in ("canvas", "task_canvas") and artifacts:
+        summary = _summarize_for_chat(body)
+        title = artifacts[0].get("title") or "成果"
+        content = f"已生成「{title}」，已放入右侧 Canvas。"
+        if summary:
+            content += f"\n\n{summary}"
+    else:
+        content = body or "..."
+        if artifacts:
+            content = (content + "\n\n" if content else "") + "\n".join(
+                f"生成文件: {a.get('path') or a.get('title')}" for a in artifacts
+            )
+
+    return {
+        "content": content or "...",
+        "debug_content": cleaned if cleaned != content else "",
+        "artifacts": artifacts,
+    }
 
 
 def _encode_project(project: dict[str, Any]) -> str:
@@ -85,6 +373,7 @@ class SessionRuntime:
         self._message_seq = 0
         self._current_assistant_id: str | None = None
         self._partials: dict[str, str] = {}
+        self._assistant_modes: dict[str, str] = {}
         self._ready = threading.Event()
         self._start_error: str | None = None
         self._writer_lock = threading.Lock()
@@ -178,7 +467,14 @@ class SessionRuntime:
             json.dump({"messages": messages}, f, ensure_ascii=False, indent=2)
         os.replace(tmp, self.history_path)
 
-    def _append_message(self, role: str, content: str, *, status: str = "done") -> dict[str, Any]:
+    def _append_message(
+        self,
+        role: str,
+        content: str,
+        *,
+        status: str = "done",
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         with self.lock:
             messages = self._load_history_unlocked()
             next_seq = max([int(m.get("seq", 0) or 0) for m in messages] + [self._message_seq]) + 1
@@ -192,11 +488,20 @@ class SessionRuntime:
                 "created_at": _now(),
                 "updated_at": _now(),
             }
+            if extra:
+                msg.update(extra)
             messages.append(msg)
             self._save_history_unlocked(messages[-200:])
             return msg
 
-    def _update_message(self, msg_id: str, *, content: str | None = None, status: str | None = None) -> None:
+    def _update_message(
+        self,
+        msg_id: str,
+        *,
+        content: str | None = None,
+        status: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
         with self.lock:
             messages = self._load_history_unlocked()
             for msg in messages:
@@ -205,6 +510,8 @@ class SessionRuntime:
                         msg["content"] = content
                     if status is not None:
                         msg["status"] = status
+                    if extra:
+                        msg.update(extra)
                     msg["updated_at"] = _now()
                     break
             self._save_history_unlocked(messages)
@@ -261,24 +568,45 @@ class SessionRuntime:
             with self.lock:
                 current = self._partials.get(assistant_id, "") + chunk
                 self._partials[assistant_id] = current
-            self._update_message(assistant_id, content=_clean_reply(current), status="running")
+            mode = self._assistant_modes.get(assistant_id, "chat")
+            extra = {"task": {"steps": _make_task_steps(mode, "running")}} if mode in ("task", "task_canvas") else None
+            self._update_message(assistant_id, content=_clean_reply(current), status="running", extra=extra)
             return
         if kind == "done" and assistant_id:
-            final_text = _build_done_text(str(event.get("text") or ""))
-            self._update_message(assistant_id, content=final_text, status="done")
-            self._log(f"[assistant] {final_text}")
+            mode = self._assistant_modes.get(assistant_id, "chat")
+            payload = _build_done_payload(
+                base_dir=self.base_dir,
+                project_id=self.project_id,
+                assistant_id=assistant_id,
+                raw_text=str(event.get("text") or ""),
+                mode=mode,
+            )
+            extra = {
+                "debug_content": payload["debug_content"],
+                "artifacts": payload["artifacts"],
+            }
+            if mode in ("task", "task_canvas"):
+                extra["task"] = {"steps": _make_task_steps(mode, "done")}
+            self._update_message(assistant_id, content=payload["content"], status="done", extra=extra)
+            self._log(f"[assistant] {payload['content']}")
             self._finish_assistant(assistant_id)
             return
         if kind == "aborted" and assistant_id:
             with self.lock:
                 partial = self._partials.get(assistant_id, "")
-            self._update_message(assistant_id, content=_clean_reply(partial) if partial else "已停止。", status="aborted")
+            mode = self._assistant_modes.get(assistant_id, "chat")
+            extra = {"task": {"steps": _make_task_steps(mode, "aborted")}} if mode in ("task", "task_canvas") else None
+            self._update_message(assistant_id, content=_clean_reply(partial) if partial else "已停止。", status="aborted", extra=extra)
             self._log("[assistant] aborted")
             self._finish_assistant(assistant_id)
             return
         if kind == "error" and assistant_id:
             detail = str(event.get("detail") or event.get("text") or "unknown error")
-            self._update_message(assistant_id, content=f"错误: {detail}", status="error")
+            mode = self._assistant_modes.get(assistant_id, "chat")
+            extra = {"debug_content": detail}
+            if mode in ("task", "task_canvas"):
+                extra["task"] = {"steps": _make_task_steps(mode, "error")}
+            self._update_message(assistant_id, content=f"错误: {detail}", status="error", extra=extra)
             self._log(f"[error] {detail}")
             self._finish_assistant(assistant_id)
             return
@@ -289,6 +617,7 @@ class SessionRuntime:
     def _finish_assistant(self, assistant_id: str) -> None:
         with self.lock:
             self._partials.pop(assistant_id, None)
+            self._assistant_modes.pop(assistant_id, None)
             if self._current_assistant_id == assistant_id:
                 self._current_assistant_id = None
                 self.busy = False
@@ -310,7 +639,7 @@ class SessionRuntime:
         with self.lock:
             return self._load_history_unlocked()
 
-    def send(self, text: str) -> dict[str, Any]:
+    def send(self, text: str, requested_mode: str = "auto") -> dict[str, Any]:
         text = (text or "").strip()
         if not text:
             raise ValueError("message text is required")
@@ -320,18 +649,37 @@ class SessionRuntime:
             if self.busy:
                 raise RuntimeError("session is busy")
             self.busy = True
-        user_msg = self._append_message("user", text)
-        assistant_msg = self._append_message("assistant", "", status="running")
+        intent = _classify_intent(text, requested_mode)
+        mode = str(intent["mode"])
+        user_msg = self._append_message(
+            "user",
+            text,
+            extra={"requested_mode": intent["requested_mode"]},
+        )
+        assistant_msg = self._append_message(
+            "assistant",
+            "",
+            status="running",
+            extra={
+                "mode": mode,
+                "intent": intent,
+                "task": {"steps": _make_task_steps(mode, "running")} if mode in ("task", "task_canvas") else None,
+                "artifacts": [],
+                "debug_content": "",
+            },
+        )
         with self.lock:
             self._current_assistant_id = assistant_msg["id"]
             self._partials[assistant_msg["id"]] = ""
+            self._assistant_modes[assistant_msg["id"]] = mode
         self._log(f"[user] {text}")
         try:
-            self._send_command({"cmd": "send", "text": text, "assistant_id": assistant_msg["id"]})
+            self._send_command({"cmd": "send", "text": text, "assistant_id": assistant_msg["id"], "mode": mode})
         except Exception:
             with self.lock:
                 self.busy = False
                 self._current_assistant_id = None
+                self._assistant_modes.pop(assistant_msg["id"], None)
             self._update_message(assistant_msg["id"], content="发送失败。", status="error")
             raise
         return user_msg

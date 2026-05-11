@@ -231,10 +231,11 @@ def _route_project_send_message(req: dict[str, Any]) -> tuple[int, dict[str, Any
         return 409, {"error": "not_running", "detail": "start the session before sending messages"}
     body = req.get("body") or {}
     text = str(body.get("text") or "").strip()
+    mode = str(body.get("mode") or "auto").strip() or "auto"
     if not text:
         return 400, {"error": "missing_field", "expected": "text"}
     try:
-        runtime.send(text)
+        runtime.send(text, mode)
     except ValueError as exc:
         return 400, {"error": "invalid_message", "detail": str(exc)}
     except RuntimeError as exc:

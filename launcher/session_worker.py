@@ -22,6 +22,29 @@ _PROTOCOL_OUT = sys.stdout
 sys.stdout = sys.stderr
 
 
+MODE_INSTRUCTIONS = {
+    "chat": (
+        "GUI mode: chat. Answer the user directly and cleanly. "
+        "Do not include internal debug notes, raw tool traces, or hidden tags."
+    ),
+    "task": (
+        "GUI mode: task. Treat this as an operation workflow. "
+        "When done, return a concise user-facing report with these sections: "
+        "Completed, Changed, Verified, Notes. Keep raw logs out of the answer."
+    ),
+    "canvas": (
+        "GUI mode: canvas. Produce a polished reusable artifact such as a document, "
+        "plan, table, or code draft. The UI will place the final content in Canvas. "
+        "Keep it self-contained and avoid debug traces."
+    ),
+    "task_canvas": (
+        "GUI mode: task plus canvas. Execute the operation and produce a polished "
+        "artifact if appropriate. Final response should briefly summarize the task "
+        "result; reusable long-form output can be included as the artifact body."
+    ),
+}
+
+
 def _decode_project(raw: str) -> dict[str, Any]:
     data = base64.urlsafe_b64decode(raw.encode("ascii"))
     project = json.loads(data.decode("utf-8"))
@@ -59,10 +82,11 @@ class Worker:
         self.thread = threading.Thread(target=self.agent.run, name="session-worker-agent", daemon=True)
         self.thread.start()
 
-    def send(self, text: str, assistant_id: str) -> None:
+    def send(self, text: str, assistant_id: str, mode: str = "chat") -> None:
         self.current_cancel = threading.Event()
         self.current_assistant_id = assistant_id
-        task_queue = self.agent.put_task(f"{FILE_HINT}\n\n{text}", source="gui")
+        instruction = MODE_INSTRUCTIONS.get(mode, MODE_INSTRUCTIONS["chat"])
+        task_queue = self.agent.put_task(f"{FILE_HINT}\n{instruction}\n\n{text}", source="gui")
         threading.Thread(
             target=self._drain_task,
             args=(task_queue, assistant_id, self.current_cancel),
@@ -128,10 +152,11 @@ def main(argv: list[str] | None = None) -> int:
         if cmd == "send":
             text = str(msg.get("text") or "").strip()
             assistant_id = str(msg.get("assistant_id") or "")
+            mode = str(msg.get("mode") or "chat")
             if not text or not assistant_id:
                 _emit({"event": "error", "assistant_id": assistant_id, "detail": "text and assistant_id are required"})
                 continue
-            worker.send(text, assistant_id)
+            worker.send(text, assistant_id, mode)
         elif cmd == "abort":
             worker.abort()
         elif cmd == "shutdown":

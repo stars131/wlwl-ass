@@ -161,3 +161,37 @@ def test_finding_5_dangerous_regex_coverage(cmd, should_match):
     from permissions import DANGEROUS_COMMAND_RE
     matched = bool(DANGEROUS_COMMAND_RE.search(cmd))
     assert matched is should_match, f"DANGEROUS_COMMAND_RE for {cmd!r}: matched={matched}, expected={should_match}"
+
+
+def test_doctor_runs_checks_in_parallel_and_isolates_failures(monkeypatch):
+    from launcher import doctor
+
+    started_slow = []
+
+    def slow_ok(name):
+        def _fn():
+            started_slow.append(name)
+            time.sleep(0.25)
+            return [doctor.Check(f"ok.{name}", f"ok {name}", "ok")]
+        return _fn
+
+    def broken():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(doctor, "check_python_version", lambda: doctor.Check("python", "python", "ok"))
+    monkeypatch.setattr(doctor, "check_core_deps", slow_ok("core"))
+    monkeypatch.setattr(doctor, "check_gui_deps", slow_ok("gui"))
+    monkeypatch.setattr(doctor, "check_tauri_toolchain", lambda: [])
+    monkeypatch.setattr(doctor, "check_llm_config", broken)
+    monkeypatch.setattr(doctor, "check_bots", lambda: [])
+    monkeypatch.setattr(doctor, "check_paths", lambda: [])
+    monkeypatch.setattr(doctor, "check_mcp", lambda: [])
+
+    t0 = time.perf_counter()
+    result = doctor.run_diagnostics()
+    elapsed = time.perf_counter() - t0
+
+    ids = {c["id"] for c in result["checks"]}
+    assert {"ok.core", "ok.gui", "doctor.llm_config"}.issubset(ids)
+    assert result["summary"]["fail"] == 1
+    assert elapsed < 0.45

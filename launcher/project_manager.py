@@ -9,7 +9,7 @@ import socket
 import threading
 from datetime import datetime
 
-from launcher.launch_config import DEFAULT_OPTIONS, project_options
+from launcher.launch_config import DEFAULT_OPTIONS, load_options, project_options
 from launcher.session_runtime import SessionRuntimeRegistry
 
 
@@ -134,7 +134,7 @@ class ProjectManager:
         with self.lock:
             name = (name or "").strip() or "新对话"
             now = _now()
-            opts = project_options(options)
+            opts = project_options(load_options(self.base_dir) if options is None else options)
             project = {
                 "id": self._gen_id(),
                 "name": name,

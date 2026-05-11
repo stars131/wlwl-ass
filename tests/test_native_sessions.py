@@ -33,13 +33,14 @@ class _FakeRuntime:
     def messages(self):
         return list(self._messages)
 
-    def send(self, text):
+    def send(self, text, requested_mode="auto"):
         self._messages.append({
             "id": f"{self.project_id}-1",
             "seq": 1,
             "role": "user",
             "content": text,
             "status": "done",
+            "requested_mode": requested_mode,
             "created_at": "2026-01-01T00:00:00",
         })
         self._messages.append({
@@ -89,6 +90,49 @@ def test_project_start_uses_native_runtime(monkeypatch):
         shutil.rmtree(tmp_path, ignore_errors=True)
 
 
+def test_project_create_uses_saved_default_options():
+    from launcher.launch_config import save_options
+    from launcher.project_manager import ProjectManager
+
+    tmp_path = _sandbox_tmp("native-default-options")
+    try:
+        save_options(tmp_path, {
+            "scheduler": True,
+            "llm_no": 2,
+            "permission_mode": "auto",
+            "project_root": "",
+            "use_project_context": True,
+            "autonomous_enabled": True,
+        })
+        pm = ProjectManager(tmp_path)
+        project = pm.create("demo", auto_start=False)
+
+        assert project["llm_no"] == 2
+        assert project["autonomous_enabled"] is True
+    finally:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+
+
+def test_api_settings_persists_autonomous_enabled(monkeypatch):
+    from launcher import api_server
+
+    tmp_path = _sandbox_tmp("native-settings-autonomous")
+    monkeypatch.setattr(api_server, "_project_root", lambda: tmp_path)
+
+    try:
+        status, payload = api_server._route_settings_put({
+            "body": {"autonomous_enabled": True},
+        })
+        assert status == 200
+        assert payload["settings"]["autonomous_enabled"] is True
+
+        status, payload = api_server._route_settings_get({})
+        assert status == 200
+        assert payload["settings"]["autonomous_enabled"] is True
+    finally:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+
+
 def test_api_project_messages(monkeypatch):
     from launcher import api_server, session_runtime
     from launcher.project_manager import ProjectManager
@@ -120,6 +164,54 @@ def test_api_project_messages(monkeypatch):
         assert payload["messages"][1]["content"] == "ok"
     finally:
         shutil.rmtree(tmp_path, ignore_errors=True)
+
+
+def test_api_project_messages_passes_mode(monkeypatch):
+    from launcher import api_server, session_runtime
+    from launcher.project_manager import ProjectManager
+
+    tmp_path = _sandbox_tmp("native-api-mode")
+    seen = []
+
+    class ModeRuntime(_FakeRuntime):
+        def send(self, text, requested_mode="auto"):
+            seen.append((text, requested_mode))
+            return super().send(text, requested_mode)
+
+    def fake_start(self, project, resume_task_id=None):
+        runtime = ModeRuntime(self.base_dir, project, resume_task_id)
+        self._runtimes[project["id"]] = runtime
+        return runtime
+
+    monkeypatch.setattr(api_server, "_project_root", lambda: tmp_path)
+    monkeypatch.setattr(api_server, "_project_manager", None)
+    monkeypatch.setattr(session_runtime.SessionRuntimeRegistry, "start", fake_start)
+
+    try:
+        pm = ProjectManager(tmp_path)
+        project = pm.create("demo", auto_start=False)
+        pm.start(project["id"])
+        monkeypatch.setattr(api_server, "_project_manager", pm)
+
+        status, _payload = api_server._route_project_send_message({
+            "params": {"id": project["id"]},
+            "body": {"text": "run tests", "mode": "task"},
+        })
+
+        assert status == 202
+        assert seen == [("run tests", "task")]
+    finally:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+
+
+def test_session_intent_classifier():
+    from launcher.session_runtime import _classify_intent
+
+    assert _classify_intent("解释一下这个报错")["mode"] == "chat"
+    assert _classify_intent("运行测试并修复失败")["mode"] == "task"
+    assert _classify_intent("写一份产品方案")["mode"] == "canvas"
+    assert _classify_intent("实现这个功能并生成文档")["mode"] == "task_canvas"
+    assert _classify_intent("解释一下这个报错", "task")["mode"] == "task"
 
 
 def test_agent_shutdown_sentinel_exits(monkeypatch):

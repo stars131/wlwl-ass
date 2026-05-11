@@ -15,6 +15,7 @@ import {
   type ApiConfig,
   type ChatMessages,
   type Project,
+  type RequestMode,
   type ProfilesState,
   type ProjectsList,
 } from '../types';
@@ -128,10 +129,14 @@ export function listProjectMessages(id: string): Promise<ChatMessages> {
   return request(`/api/projects/${encodeURIComponent(id)}/messages`, chatMessagesSchema);
 }
 
-export function sendProjectMessage(id: string, text: string): Promise<ChatMessages> {
+export function sendProjectMessage(
+  id: string,
+  text: string,
+  mode: RequestMode = 'auto',
+): Promise<ChatMessages> {
   return request(`/api/projects/${encodeURIComponent(id)}/messages`, chatMessagesSchema, {
     method: 'POST',
-    body: { text },
+    body: { text, mode },
   });
 }
 

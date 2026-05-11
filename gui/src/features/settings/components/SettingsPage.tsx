@@ -40,7 +40,9 @@ export function SettingsPage(): JSX.Element {
   const onSave = (e: React.FormEvent) => {
     e.preventDefault();
     if (!draft) return;
-    patch.mutate(draft);
+    patch.mutate(draft, {
+      onSuccess: (next) => setDraft(next),
+    });
   };
 
   const onReset = () => {

@@ -118,7 +118,21 @@ describe('sessionsApi', () => {
     expect(data.messages).toHaveLength(1);
     expect(fetchMock.mock.calls[0]![0]).toBe('http://t.local/api/projects/p_x/messages');
     expect(fetchMock.mock.calls[0]![1].method).toBe('POST');
-    expect(JSON.parse(fetchMock.mock.calls[0]![1].body as string)).toEqual({ text: 'hello' });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body as string)).toEqual({
+      text: 'hello',
+      mode: 'auto',
+    });
+  });
+
+  it('sendProjectMessage can force task mode', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ running: true, messages: [] }));
+    globalThis.fetch = fetchMock;
+    await api.sendProjectMessage('p_x', 'run tests', 'task');
+
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body as string)).toEqual({
+      text: 'run tests',
+      mode: 'task',
+    });
   });
 
   it('listApiConfigs unwraps the configs array', async () => {
