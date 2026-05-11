@@ -19,7 +19,7 @@ if "%RC%"=="0" (
     echo wlwl-ass exited normally.
 ) else (
     echo wlwl-ass startup failed with exit code %RC%.
+    echo Check temp\logs\bootstrap-*.log for details.
+    pause
 )
-echo Check temp\logs\bootstrap-*.log for details.
-pause
 exit /b %RC%

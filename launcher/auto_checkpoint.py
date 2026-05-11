@@ -47,7 +47,7 @@ def _safe_slug(s: str) -> str:
     return out[:60].strip("_") or "task"
 
 
-def _generate_task_id() -> str:
+def _generate_task_id(project_id: str | None = None) -> str:
     """Build a stable per-agent-instance task id.
 
     Honors ``WLWL_AUTO_CHECKPOINT_TASK_ID`` if the launcher set one (so the
@@ -57,7 +57,7 @@ def _generate_task_id() -> str:
     explicit = os.environ.get(_AUTO_TASK_ENV, "").strip()
     if explicit:
         return _safe_slug(explicit)
-    project_id = _safe_slug(os.environ.get("WLWL_PROJECT_ID", "") or "")
+    project_id = _safe_slug(project_id or os.environ.get("WLWL_PROJECT_ID", "") or "")
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
     suffix = secrets.token_hex(2)
     if project_id:
@@ -70,6 +70,7 @@ def install_auto_checkpoint(
     *,
     every_n_turns: int = _DEFAULT_INTERVAL,
     task_id: str | None = None,
+    project_id: str | None = None,
 ) -> str:
     """Attach an auto-save hook to ``agent``.
 
@@ -77,7 +78,7 @@ def install_auto_checkpoint(
     flag) can fetch the checkpoint by name. Idempotent — calling twice on
     the same agent only registers one hook (we key by hook name).
     """
-    resolved = _safe_slug(task_id) if task_id else _generate_task_id()
+    resolved = _safe_slug(task_id) if task_id else _generate_task_id(project_id)
     state_lock = threading.Lock()
 
     if not hasattr(agent, "_turn_end_hooks") or agent._turn_end_hooks is None:
@@ -161,13 +162,13 @@ def load_resume_state(task_id: str) -> dict[str, Any] | None:
     return state if isinstance(state, dict) else None
 
 
-def maybe_apply_resume(agent: Any) -> dict[str, Any] | None:
+def maybe_apply_resume(agent: Any, *, task_id: str | None = None) -> dict[str, Any] | None:
     """If the env points at a resumable task and a checkpoint exists,
     restore working memory + a marker into history. Otherwise no-op.
 
     Returns the loaded state (for tests / logging) or None.
     """
-    task_id = os.environ.get(_AUTO_TASK_ENV, "").strip()
+    task_id = (task_id or os.environ.get(_AUTO_TASK_ENV, "")).strip()
     if not task_id:
         return None
     state = load_resume_state(_safe_slug(task_id))

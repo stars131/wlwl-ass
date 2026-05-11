@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { ApiError } from '@/lib/api';
-import { getApiBase } from '@/lib/env';
+import { apiHeaders, getApiBase } from '@/lib/env';
 
 import {
   onboardingStatusSchema,
@@ -13,7 +13,7 @@ async function request<T>(path: string, schema: z.ZodType<T>, init: RequestInit 
   const url = `${getApiBase()}${path}`;
   const res = await fetch(url, {
     ...init,
-    headers: { 'content-type': 'application/json', ...(init.headers ?? {}) },
+    headers: apiHeaders(init.headers),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');

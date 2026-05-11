@@ -92,7 +92,7 @@ def _candidate_mykey_signature(project_root: str | None = None):
     return tuple(sig)
 
 
-def _load_from_env() -> dict:
+def _load_from_env(project_root: str | None = None) -> dict:
     """Load .env into os.environ, then synthesize mykey-shaped configs.
 
     Drains :mod:`launcher.config_store` (~/.wlwl-ass/config.json +
@@ -102,7 +102,7 @@ def _load_from_env() -> dict:
     """
     try:
         from launcher import dotenv_shim as _denv
-        _denv.bootstrap()  # .env → os.environ
+        _denv.bootstrap(project_root=_project_root(project_root))  # .env -> os.environ
     except Exception:
         pass
 
@@ -111,7 +111,9 @@ def _load_from_env() -> dict:
     # 1) Preferred: launcher.config_store (overlays env vars itself)
     try:
         from launcher import config_store as _cs
-        out.update(_cs.synthesize_mykeys_from_store())
+        project_path = _cs.project_config_path(_project_root(project_root))
+        store = _cs.ConfigStore(project_path=project_path)
+        out.update(_cs.synthesize_mykeys_from_store(store))
     except Exception:
         pass
 
@@ -119,7 +121,9 @@ def _load_from_env() -> dict:
     if not out:
         try:
             from launcher import dotenv_shim as _denv
-            out.update(_denv.synthesize_mykeys())
+            env = dict(os.environ)
+            env.update(_denv.parse_env_file(_denv._default_env_path(_project_root(project_root))))
+            out.update(_denv.synthesize_mykeys(env))
         except Exception:
             pass
 
@@ -232,7 +236,7 @@ def _load_mykeys(project_root: str | None = None):
     merged: dict = {}
     used_paths: list[str] = []
 
-    env_synth = _load_from_env()
+    env_synth = _load_from_env(project_root)
     if env_synth:
         merged.update(env_synth)
         used_paths.append("<env>")

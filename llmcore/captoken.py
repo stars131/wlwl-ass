@@ -73,7 +73,16 @@ def sign(token: CapToken, signing_key: bytes) -> str:
     return f"{_PREFIX}{_b64url(payload)}.{sig}"
 
 
-def verify(wire: str, signing_key: bytes) -> CapToken:
+def verify(wire: str, signing_key: bytes, *,
+           check_expiry: bool = True, grace_sec: int = 0) -> CapToken:
+    """Decode + signature-check + (optionally) expiry-check a wire token.
+
+    :param check_expiry: when True (default), raises ``ValueError("token expired")``
+        if ``now > expires_at + grace_sec``. Pass False only in debug paths
+        where you intentionally want to inspect a stale token.
+    :param grace_sec: clock-skew tolerance, applied only when ``check_expiry``
+        is True.
+    """
     if not wire.startswith(_PREFIX):
         raise ValueError("not a captok v1 token")
     body = wire[len(_PREFIX):]
@@ -86,12 +95,15 @@ def verify(wire: str, signing_key: bytes) -> CapToken:
     if not hmac.compare_digest(expected, sig):
         raise ValueError("signature mismatch")
     p = json.loads(payload_bytes)
-    return CapToken(
+    tok = CapToken(
         issuer=p["iss"], subject=p["sub"],
         capabilities=tuple(p["cap"]),
         issued_at=int(p["iat"]), expires_at=int(p["exp"]),
         nonce=p["nonce"],
     )
+    if check_expiry and tok.expired(grace=grace_sec):
+        raise ValueError("token expired")
+    return tok
 
 
 def mint(*, issuer: str, subject: str, capabilities: tuple[str, ...],

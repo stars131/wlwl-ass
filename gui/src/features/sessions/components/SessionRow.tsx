@@ -92,7 +92,7 @@ export function SessionRow({
               {resumePanelOpen ? '收起恢复' : '📷 恢复'}
             </button>
           ) : null}
-          {project.running && project.port ? (
+          {project.running ? (
             <button
               type="button"
               onClick={() => onOpenChat(project)}

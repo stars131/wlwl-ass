@@ -7,7 +7,7 @@
  */
 import { z } from 'zod';
 
-import { getApiBase } from './env';
+import { apiHeaders, getApiBase } from './env';
 
 export class ApiError extends Error {
   constructor(
@@ -23,8 +23,8 @@ export class ApiError extends Error {
 async function request<T>(path: string, schema: z.ZodType<T>, init?: RequestInit): Promise<T> {
   const url = `${getApiBase()}${path}`;
   const res = await fetch(url, {
-    headers: { 'content-type': 'application/json' },
     ...init,
+    headers: apiHeaders(init?.headers),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');

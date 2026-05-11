@@ -34,6 +34,7 @@ function makeBot(overrides: Record<string, unknown> = {}) {
     running_self: false,
     running_external: false,
     running: false,
+    auto_start: true,
     log_path: '/tmp/fsapp.log',
     ...overrides,
   };

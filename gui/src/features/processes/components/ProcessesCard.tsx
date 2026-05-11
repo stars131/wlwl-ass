@@ -11,9 +11,8 @@ import type { ProcessEntry } from '../api/processesApi';
  * Process Registry card (#19).
  *
  * Surfaces every subprocess the launcher or the agent has registered:
- * `session:<id>` (streamlit children), `bot:<key>` (chat platform bots),
- * and any `process({"action":"register",...})` calls the agent itself
- * makes for headless browsers / shells / long tasks.
+ * `bot:<key>` (chat platform bots), and any `process({"action":"register",...})`
+ * calls the agent itself makes for headless browsers / shells / long tasks.
  *
  * Polling: 5s. Listing is cheap (one process_registry.list() call); the
  * `alive` flag is recomputed on every refresh, so killed processes flip
@@ -45,7 +44,7 @@ export function ProcessesCard(): JSX.Element {
         <div>
           <h2 className="text-sm font-semibold">进程注册表</h2>
           <p className="text-xs text-muted-foreground">
-            launcher 起的 streamlit / bot 子进程 + agent 通过 ``process`` 工具注册的后台任务。
+            launcher 起的 bot 子进程 + agent 通过 process 工具注册的后台任务。
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs">

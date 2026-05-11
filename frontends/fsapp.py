@@ -1,10 +1,11 @@
-import glob, json, os, queue as Q, re, sys, threading, time
+import glob, json, os, queue as Q, re, socket, sys, threading, time
+from dataclasses import dataclass
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 os.chdir(PROJECT_ROOT)
 from agentmain import GeneraticAgent
-from frontends.chatapp_common import format_restore
+from frontends.chatapp_common import FILE_HINT, format_restore
 from frontends.continue_cmd import handle_frontend_command as handle_continue_frontend, reset_conversation
 from llmcore import mykeys
 
@@ -32,6 +33,107 @@ _MSG_TYPE_MAP = {"image": "[image]", "audio": "[audio]", "file": "[file]", "medi
 TEMP_DIR = os.path.join(PROJECT_ROOT, "temp")
 MEDIA_DIR = os.path.join(TEMP_DIR, "feishu_media")
 os.makedirs(MEDIA_DIR, exist_ok=True)
+
+FEISHU_LOCK_PORT = 19532
+_INSTANCE_LOCK = None
+
+
+def _acquire_single_instance():
+    """Hold a localhost lock port for the process lifetime.
+
+    Multiple Feishu long-connection clients can split event delivery across
+    old and new processes. When that happens the GUI appears to be running,
+    but the active bot may not receive the message the user just sent.
+    """
+    global _INSTANCE_LOCK
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", FEISHU_LOCK_PORT))
+        sock.listen(1)
+    except OSError:
+        sock.close()
+        return False
+    _INSTANCE_LOCK = sock
+    return True
+
+# Lark IM API 上传上限（参见 open.feishu.cn server-docs/im-v1）。
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_FILE_BYTES = 30 * 1024 * 1024
+
+# 出站文件沙箱：只允许 PROJECT_ROOT 下的路径，且未命中拒绝列表。
+SANDBOX_ROOT = os.path.realpath(PROJECT_ROOT)
+SANDBOX_DENY = (
+    re.compile(r'(?:^|[\\/])\.git(?:[\\/]|$)'),
+    re.compile(r'(?:^|[\\/])\.wlwl-ass(?:[\\/]|$)'),
+    re.compile(r'(?:^|[\\/])memory(?:[\\/]|$)'),
+    re.compile(r'(?:^|[\\/])\.env$'),
+    re.compile(r'launcher_api_configs\.json$'),
+    re.compile(r'mykey[^\\/]*\.py$'),
+)
+
+
+def _user_media_dir(open_id):
+    safe = re.sub(r'[^A-Za-z0-9_-]', '_', open_id or '')[:64] or 'unknown'
+    d = os.path.join(MEDIA_DIR, safe)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _safe_save(open_id, base_filename, data):
+    """落盘到 per-open_id 子目录，文件名 timestamp + 净化后的 basename，避免冲突。"""
+    name, ext = os.path.splitext(os.path.basename(base_filename or 'file'))
+    name = re.sub(r'[^\w.\-]', '_', name)[:80] or 'file'
+    ext = re.sub(r'[^\w.]', '', ext)[:16]
+    user_dir = _user_media_dir(open_id)
+    ts = time.strftime('%Y%m%d_%H%M%S')
+    target = os.path.join(user_dir, f"{ts}_{name}{ext}")
+    n = 1
+    while os.path.exists(target):
+        target = os.path.join(user_dir, f"{ts}_{n}_{name}{ext}")
+        n += 1
+        if n > 99:
+            break
+    with open(target, "wb") as f:
+        f.write(data)
+    return target
+
+
+def _path_in_sandbox(file_path):
+    """(ok, reason). ok=True 才允许发出去。"""
+    try:
+        real = os.path.realpath(file_path)
+    except Exception:
+        return False, "无法解析路径"
+    if not (real == SANDBOX_ROOT or real.startswith(SANDBOX_ROOT + os.sep)):
+        return False, "项目目录外"
+    needle = real.lower() if os.name == 'nt' else real
+    for pat in SANDBOX_DENY:
+        if pat.search(needle):
+            return False, "命中拒绝列表"
+    return True, ""
+
+
+def _check_size(file_path, max_bytes):
+    try:
+        size = os.path.getsize(file_path)
+    except Exception:
+        return False, "无法获取文件大小"
+    if size > max_bytes:
+        return False, f"文件 {size/1024/1024:.1f}MB 超 Lark 上限 {max_bytes//1024//1024}MB"
+    return True, ""
+
+
+def _upload_with_retry(uploader, file_path, attempts=2):
+    """uploader 返回 truthy 即成功；失败重试，指数退避。"""
+    for i in range(attempts):
+        try:
+            r = uploader(file_path)
+            if r:
+                return r
+        except Exception as e:
+            print(f"[fs upload] attempt {i+1} error: {e!r}")
+        time.sleep(0.5 * (i + 1))
+    return None
 
 
 def _clean(text):
@@ -225,12 +327,88 @@ def _extract_post_content(content_json):
 APP_ID = str(mykeys.get("fs_app_id", "") or "").strip()
 APP_SECRET = str(mykeys.get("fs_app_secret", "") or "").strip()
 ALLOWED_USERS = _to_allowed_set(mykeys.get("fs_allowed_users", []))
-PUBLIC_ACCESS = not ALLOWED_USERS or "*" in ALLOWED_USERS
+# Security: only allow public access when the user *explicitly* writes "*" into
+# allowed_users. An empty/missing list now means "deny everyone" — historically
+# it meant "allow everyone", which combined with the agent's do_code_run made
+# any unconfigured Feishu app a remote-code-exec surface.
+PUBLIC_ACCESS = "*" in ALLOWED_USERS
+if not ALLOWED_USERS:
+    print(
+        "⚠️  bots.feishu.allowed_users 未配置 —— 默认拒绝所有用户。\n"
+        "   单人使用：python -m launcher.config set bots.feishu.allowed_users '[\"ou_yourid\"]'\n"
+        "   想公开（高风险，agent 可跑代码）：python -m launcher.config set bots.feishu.allowed_users '[\"*\"]'"
+    )
 AGENT_TIMEOUT_SEC = 900
+SYSTEM_PROMPT = str(mykeys.get("fs_system_prompt", "") or "").strip()
+USER_PROMPTS = mykeys.get("fs_user_prompts") or {}
+if not isinstance(USER_PROMPTS, dict): USER_PROMPTS = {}
+IDLE_TIMEOUT_S = 3600.0
+CLEANUP_INTERVAL_S = 300.0
 
-agent = GeneraticAgent()
-threading.Thread(target=agent.run, daemon=True).start()
+
+@dataclass
+class _AgentSlot:
+    agent: object
+    thread: threading.Thread
+    last_used_ts: float
+
+
+_agent_slots: dict[str, _AgentSlot] = {}
+_agent_lock = threading.Lock()
 client, user_tasks = None, {}
+
+
+def _resolve_extra_prompt(open_id):
+    p = (USER_PROMPTS.get(open_id) or SYSTEM_PROMPT or "").strip()
+    return f"\n\n# Feishu Persona\n{p}" if p else ""
+
+
+def _apply_prompt(agent, prompt_text):
+    # next_llm 切换 active client，所以一次写入全部 backend 才能稳定生效。
+    for c in getattr(agent, "llmclients", []) or []:
+        b = getattr(c, "backend", None)
+        if b is not None:
+            b.extra_sys_prompt = prompt_text
+
+
+def _get_agent(open_id):
+    with _agent_lock:
+        slot = _agent_slots.get(open_id)
+        if slot and slot.thread.is_alive():
+            slot.last_used_ts = time.time()
+            return slot.agent
+        a = GeneraticAgent()
+        _apply_prompt(a, _resolve_extra_prompt(open_id))
+        t = threading.Thread(target=a.run, name=f"fs-agent-{open_id[:8]}", daemon=True)
+        t.start()
+        _agent_slots[open_id] = _AgentSlot(a, t, time.time())
+        return a
+
+
+def _reap_loop():
+    while True:
+        time.sleep(CLEANUP_INTERVAL_S)
+        now = time.time()
+        with _agent_lock:
+            stale = [k for k, s in _agent_slots.items()
+                     if now - s.last_used_ts > IDLE_TIMEOUT_S]
+            stale_slots = [(k, _agent_slots.pop(k)) for k in stale if k in _agent_slots]
+        for k, slot in stale_slots:
+            try:
+                shutdown = getattr(slot.agent, 'shutdown', None)
+                if callable(shutdown): shutdown()
+                else: slot.agent.abort()
+            except Exception as e:
+                print(f"[fs-reaper] shutdown {k} error: {e!r}")
+            try:
+                slot.thread.join(timeout=5)
+            except Exception:
+                pass
+            if slot.thread.is_alive():
+                print(f"[fs-reaper] agent {k} did not exit after shutdown")
+
+
+threading.Thread(target=_reap_loop, name="fs-reaper", daemon=True).start()
 
 
 def create_client():
@@ -343,7 +521,7 @@ def _download_file_sync(message_id, file_key, resource_type="file"):
     return None, None
 
 
-def _download_and_save_media(msg_type, content_json, message_id):
+def _download_and_save_media(msg_type, content_json, message_id, open_id):
     data, filename = None, None
     if msg_type == "image":
         image_key = content_json.get("image_key")
@@ -360,10 +538,8 @@ def _download_and_save_media(msg_type, content_json, message_id):
             if msg_type == "audio" and filename and not filename.endswith(".opus"):
                 filename = f"{filename}.opus"
     if data and filename:
-        file_path = os.path.join(MEDIA_DIR, os.path.basename(filename))
-        with open(file_path, "wb") as f:
-            f.write(data)
-        return file_path, filename
+        file_path = _safe_save(open_id, filename, data)
+        return file_path, os.path.basename(file_path)
     return None, None
 
 
@@ -378,22 +554,34 @@ def _describe_media(msg_type, file_path, filename):
 
 
 def _send_local_file(receive_id, file_path, receive_id_type="open_id"):
+    base = os.path.basename(file_path)
     if not os.path.isfile(file_path):
-        send_message(receive_id, f"⚠️ 文件不存在: {file_path}", receive_id_type=receive_id_type)
+        send_message(receive_id, f"⚠️ 文件不存在: {base}", receive_id_type=receive_id_type)
+        return False
+    ok, reason = _path_in_sandbox(file_path)
+    if not ok:
+        print(f"[fs sandbox] 拒绝 [FILE:{file_path}] — {reason}")
+        send_message(receive_id, f"⚠️ 拒绝发送（{reason}）: {base}", receive_id_type=receive_id_type)
         return False
     ext = os.path.splitext(file_path)[1].lower()
-    if ext in _IMAGE_EXTS:
-        image_key = _upload_image_sync(file_path)
+    is_image = ext in _IMAGE_EXTS
+    max_bytes = MAX_IMAGE_BYTES if is_image else MAX_FILE_BYTES
+    ok, reason = _check_size(file_path, max_bytes)
+    if not ok:
+        send_message(receive_id, f"⚠️ {reason}: {base}", receive_id_type=receive_id_type)
+        return False
+    if is_image:
+        image_key = _upload_with_retry(_upload_image_sync, file_path)
         if image_key:
             send_message(receive_id, json.dumps({"image_key": image_key}, ensure_ascii=False), msg_type="image", receive_id_type=receive_id_type)
             return True
     else:
-        file_key = _upload_file_sync(file_path)
+        file_key = _upload_with_retry(_upload_file_sync, file_path)
         if file_key:
             msg_type = "media" if ext in _AUDIO_EXTS or ext in _VIDEO_EXTS else "file"
             send_message(receive_id, json.dumps({"file_key": file_key}, ensure_ascii=False), msg_type=msg_type, receive_id_type=receive_id_type)
             return True
-    send_message(receive_id, f"⚠️ 文件发送失败: {os.path.basename(file_path)}", receive_id_type=receive_id_type)
+    send_message(receive_id, f"⚠️ 上传失败（已重试 2 次）: {base}", receive_id_type=receive_id_type)
     return False
 
 
@@ -402,7 +590,7 @@ def _send_generated_files(receive_id, raw_text, receive_id_type="open_id"):
         _send_local_file(receive_id, file_path, receive_id_type)
 
 
-def _build_user_message(message):
+def _build_user_message(message, open_id):
     msg_type = message.message_type
     message_id = message.message_id
     content_json = _parse_json(message.content)
@@ -416,14 +604,14 @@ def _build_user_message(message):
         if text:
             parts.append(text)
         for image_key in image_keys:
-            file_path, filename = _download_and_save_media("image", {"image_key": image_key}, message_id)
+            file_path, filename = _download_and_save_media("image", {"image_key": image_key}, message_id, open_id)
             if file_path and filename:
                 parts.append(_describe_media("image", file_path, filename))
                 image_paths.append(file_path)
             else:
                 parts.append("[image: download failed]")
     elif msg_type in ("image", "audio", "file", "media"):
-        file_path, filename = _download_and_save_media(msg_type, content_json, message_id)
+        file_path, filename = _download_and_save_media(msg_type, content_json, message_id, open_id)
         if file_path and filename:
             parts.append(_describe_media(msg_type, file_path, filename))
             if msg_type == "image":
@@ -538,14 +726,21 @@ def handle_message(data):
     if not PUBLIC_ACCESS and open_id not in ALLOWED_USERS:
         print(f"未授权用户: {open_id}")
         return
-    user_input, image_paths = _build_user_message(message)
+    user_input, image_paths = _build_user_message(message, open_id)
     if not user_input:
         if chat_id:
             send_message(chat_id, f"⚠️ 暂不支持处理此类飞书消息：{message.message_type}", receive_id_type="chat_id")
         else:
             send_message(open_id, f"⚠️ 暂不支持处理此类飞书消息：{message.message_type}")
         return
-    print(f"收到消息 [{open_id}] ({message.message_type}, {len(image_paths)} images): {user_input[:200]}")
+    # 默认对消息正文截短 + 脱敏，避免把私聊内容直接落到服务器 stdout（任何 launcher
+    # log 都能读到）。设 WLWL_FSAPP_LOG_VERBOSE=1 恢复完整 200 字预览以便 debug。
+    if os.environ.get("WLWL_FSAPP_LOG_VERBOSE", "").strip():
+        preview = user_input[:200]
+    else:
+        preview = (user_input[:40] + "…") if len(user_input) > 40 else user_input
+    print(f"收到消息 [{open_id}] ({message.message_type}, {len(image_paths)} images): {preview}")
+    agent = _get_agent(open_id)
     if message.message_type == "text" and user_input.startswith("/"):
         return handle_command(open_id, user_input, chat_id)
 
@@ -561,7 +756,7 @@ def handle_message(data):
         if not hasattr(agent, '_turn_end_hooks'): agent._turn_end_hooks = {}
         agent._turn_end_hooks[hook_key] = _make_task_hook(card, done_event, on_final)
         try:
-            agent.put_task(user_input, source="feishu", images=image_paths)
+            agent.put_task(f"{FILE_HINT}\n\n{user_input}", source="feishu", images=image_paths)
             start = time.time()
             while not done_event.wait(timeout=3):
                 if not user_tasks.get(open_id, {}).get("running", True):
@@ -583,6 +778,8 @@ def handle_message(data):
 
 
 def handle_command(open_id, cmd, chat_id=None):
+    agent = _get_agent(open_id)
+
     def _send_cmd_response(content):
         if chat_id:
             send_message(chat_id, content, receive_id_type="chat_id")
@@ -622,6 +819,9 @@ def handle_command(open_id, cmd, chat_id=None):
 
 def main():
     global client
+    if not _acquire_single_instance():
+        print("[Feishu] Another instance is already running; exiting.", flush=True)
+        return
     if not APP_ID or not APP_SECRET:
         print("错误: 请通过 GUI Bots tab 或 `python -m launcher.config set bots.feishu.app_id ... && python -m launcher.config set bots.feishu.app_secret ...` 配置飞书应用凭据")
         sys.exit(1)

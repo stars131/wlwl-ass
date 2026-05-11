@@ -16,6 +16,7 @@ export const botRowSchema = z.object({
   running_self: z.boolean(),
   running_external: z.boolean(),
   running: z.boolean(),
+  auto_start: z.boolean().default(true),
   log_path: z.string(),
 });
 export type BotRow = z.infer<typeof botRowSchema>;

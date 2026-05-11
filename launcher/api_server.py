@@ -8,8 +8,10 @@ Phase 1 adds business endpoints backed by ProjectManager / api_config:
   POST   /api/projects                     -> create new project; body: {name, options?}
   GET    /api/projects/<id>                -> single project detail
   DELETE /api/projects/<id>                -> stop + remove
-  POST   /api/projects/<id>/start          -> start the streamlit subprocess
-  POST   /api/projects/<id>/stop           -> stop the subprocess
+  POST   /api/projects/<id>/start          -> start the native agent session
+  POST   /api/projects/<id>/stop           -> stop the native agent session
+  GET    /api/projects/<id>/messages       -> list native chat messages
+  POST   /api/projects/<id>/messages       -> send a native chat message
   POST   /api/projects/<id>/activate       -> mark as last-active
   POST   /api/projects/<id>/pin            -> body: {pinned: bool}
   PATCH  /api/projects/<id>                -> body: {name?: str}  (rename)
@@ -50,6 +52,9 @@ _started_at = time.monotonic()
 _project_manager = None  # lazy ProjectManager instance
 _bot_manager = None  # lazy BotManager instance
 _scheduler_proc: subprocess.Popen | None = None  # L4 reflect/scheduler.py child
+_httpd: "_ThreadingServer | None" = None
+_shutdown_started = False
+_shutdown_lock = threading.Lock()
 
 
 # ─── Lazy backend wiring ───────────────────────────────────────────────
@@ -188,6 +193,65 @@ def _route_project_stop(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         return 404, {"error": "not_found", "id": pid}
     _pm().stop(pid)
     return 200, {"project": _pm().get(pid)}
+
+
+def _project_messages_path(project_id: str) -> str:
+    return os.path.join(_project_root(), "temp", "project_messages", f"{project_id}.json")
+
+
+def _load_project_messages(project_id: str) -> list[dict[str, Any]]:
+    path = _project_messages_path(project_id)
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    messages = data.get("messages") if isinstance(data, dict) else None
+    return messages if isinstance(messages, list) else []
+
+
+def _route_project_messages(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    pid = req["params"]["id"]
+    if not _pm().get(pid):
+        return 404, {"error": "not_found", "id": pid}
+    runtime = _pm().session(pid)
+    messages = runtime.messages() if runtime else _load_project_messages(pid)
+    return 200, {"messages": messages, "running": bool(runtime)}
+
+
+def _route_project_send_message(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    pid = req["params"]["id"]
+    project = _pm().get(pid)
+    if not project:
+        return 404, {"error": "not_found", "id": pid}
+    runtime = _pm().session(pid)
+    if not runtime:
+        return 409, {"error": "not_running", "detail": "start the session before sending messages"}
+    body = req.get("body") or {}
+    text = str(body.get("text") or "").strip()
+    if not text:
+        return 400, {"error": "missing_field", "expected": "text"}
+    try:
+        runtime.send(text)
+    except ValueError as exc:
+        return 400, {"error": "invalid_message", "detail": str(exc)}
+    except RuntimeError as exc:
+        return 409, {"error": "send_failed", "detail": str(exc)}
+    _pm().touch(pid)
+    return 202, {"messages": runtime.messages(), "running": True}
+
+
+def _route_project_abort_message(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    pid = req["params"]["id"]
+    if not _pm().get(pid):
+        return 404, {"error": "not_found", "id": pid}
+    runtime = _pm().session(pid)
+    if not runtime:
+        return 409, {"error": "not_running"}
+    runtime.abort_current()
+    return 200, {"messages": runtime.messages(), "running": True}
 
 
 def _route_project_activate(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -478,6 +542,7 @@ def _route_bots_list(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             "running_self": st.running_self,
             "running_external": st.running_external,
             "running": st.running,
+            "auto_start": spec.auto_start,
             "log_path": st.log_path,
         })
     return 200, {"bots": rows}
@@ -551,29 +616,12 @@ def _route_bot_install_sdk(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
 
 def _route_project_open(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-    """POST /api/projects/<id>/open → open the streamlit URL in the system
-    default browser. Workaround for the Tauri webview not handling
-    ``<a target="_blank">`` (no shell plugin loaded)."""
+    """Compatibility no-op; native sessions open inside the GUI."""
     pid = req["params"]["id"]
     project = _pm().get(pid)
     if not project:
         return 404, {"error": "not_found", "id": pid}
-    port = project.get("port")
-    if not port:
-        return 400, {"error": "no_port"}
-    url = f"http://127.0.0.1:{port}/"
-    try:
-        if os.name == "nt":
-            os.startfile(url)  # type: ignore[attr-defined]
-        elif sys.platform == "darwin":
-            import subprocess as _sp
-            _sp.Popen(["open", url])
-        else:
-            import subprocess as _sp
-            _sp.Popen(["xdg-open", url])
-    except Exception as exc:
-        return 500, {"error": "open_failed", "detail": str(exc), "url": url}
-    return 200, {"opened": True, "url": url}
+    return 200, {"opened": False, "url": "", "native": True}
 
 
 def _route_llm_test(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -837,6 +885,20 @@ def _route_processes_cleanup(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]
     return 200, {"removed": removed}
 
 
+def _route_shutdown(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """Gracefully stop the desktop runtime from the Tauri shell.
+
+    The response is sent before shutdown starts; the actual cleanup runs in a
+    background thread so the request handler can finish normally.
+    """
+    def _stop_later() -> None:
+        time.sleep(0.05)
+        _begin_shutdown()
+
+    threading.Thread(target=_stop_later, daemon=True).start()
+    return 200, {"ok": True, "message": "shutdown scheduled"}
+
+
 # ── Checkpoint manager (#20) ─────────────────────────────────────────
 
 
@@ -945,6 +1007,9 @@ ROUTES: list[tuple[str, str, Callable[[dict[str, Any]], tuple[int, dict[str, Any
     ("DELETE", "/api/projects/<id>", _route_project_delete),
     ("POST", "/api/projects/<id>/start", _route_project_start),
     ("POST", "/api/projects/<id>/stop", _route_project_stop),
+    ("GET", "/api/projects/<id>/messages", _route_project_messages),
+    ("POST", "/api/projects/<id>/messages", _route_project_send_message),
+    ("POST", "/api/projects/<id>/messages/abort", _route_project_abort_message),
     ("POST", "/api/projects/<id>/activate", _route_project_activate),
     ("POST", "/api/projects/<id>/pin", _route_project_pin),
     ("PATCH", "/api/projects/<id>", _route_project_patch),
@@ -980,6 +1045,7 @@ ROUTES: list[tuple[str, str, Callable[[dict[str, Any]], tuple[int, dict[str, Any
     ("POST", "/api/processes", _route_processes_register),
     ("POST", "/api/processes/kill", _route_processes_kill),
     ("POST", "/api/processes/cleanup", _route_processes_cleanup),
+    ("POST", "/api/shutdown", _route_shutdown),
     ("GET", "/api/checkpoints", _route_checkpoints_list),
     ("GET", "/api/checkpoints/<task_id>", _route_checkpoints_get_task),
     ("POST", "/api/checkpoints/<task_id>", _route_checkpoints_save),
@@ -1045,7 +1111,7 @@ def _send_sse_headers(handler: "_Handler") -> None:
     handler.send_header("Cache-Control", "no-cache, no-transform")
     handler.send_header("Connection", "keep-alive")
     handler.send_header("X-Accel-Buffering", "no")  # nginx hint
-    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.send_header("Access-Control-Allow-Origin", handler._cors_origin())
     handler.end_headers()
 
 
@@ -1196,22 +1262,32 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if os.environ.get("WLWL_API_DEBUG"):
             super().log_message(format, *args)
 
+    def _cors_origin(self) -> str:
+        """Echo the request's Origin only when WLWL_API_AUTH_TOKEN is set
+        (because then real-origin browsers must opt in). With no token (i.e.
+        loopback-dev mode) keep the legacy ``*`` so the local GUI keeps
+        working without ceremony."""
+        if (os.environ.get("WLWL_API_AUTH_TOKEN") or "").strip():
+            origin = (self.headers.get("Origin") or "").strip()
+            return origin or "null"
+        return "*"
+
     def _send_json(self, payload: Any, status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", self._cors_origin())
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
         self.wfile.write(body)
 
     def do_OPTIONS(self) -> None:
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", self._cors_origin())
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
 
     def _read_body(self) -> dict[str, Any]:
@@ -1225,7 +1301,47 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return {}
         return data if isinstance(data, dict) else {}
 
+    def _check_auth(self) -> bool:
+        """Bearer-token auth gate.
+
+        Returns True (proceed) when:
+          * no WLWL_API_AUTH_TOKEN env var is set AND the connection is
+            from loopback — the original local-only contract; OR
+          * the request carries `Authorization: Bearer <token>` matching
+            the env var (timing-safe compared).
+
+        Returns False (and writes 401) otherwise. CORS preflights (OPTIONS)
+        are exempt — they cannot carry custom auth headers.
+        """
+        token = (os.environ.get("WLWL_API_AUTH_TOKEN") or "").strip()
+        peer = (self.client_address[0] if self.client_address else "")
+        is_loopback = peer in ("127.0.0.1", "::1", "localhost")
+        if not token:
+            if is_loopback:
+                return True
+            self._send_json({"error": "auth_required",
+                             "detail": "non-loopback bind requires WLWL_API_AUTH_TOKEN"},
+                            status=401)
+            return False
+        got = (self.headers.get("Authorization") or "").strip()
+        expected = f"Bearer {token}"
+        import hmac as _hmac
+        if _hmac.compare_digest(got, expected):
+            return True
+        parsed = urlparse(self.path)
+        from urllib.parse import parse_qs
+        query_token = (parse_qs(parsed.query).get("access_token") or [""])[-1]
+        sse_handler, _sse_params = _match_sse(parsed.path)
+        if sse_handler is not None and query_token and _hmac.compare_digest(query_token, token):
+            return True
+        self._send_json({"error": "auth_required",
+                         "detail": "missing or invalid Authorization header"},
+                        status=401)
+        return False
+
     def _dispatch(self, method: str) -> None:
+        if not self._check_auth():
+            return
         parsed = urlparse(self.path)
         path = parsed.path
         handler, params = _match_route(method, path)
@@ -1252,6 +1368,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         sse_handler, sse_params = _match_sse(path)
         if sse_handler is not None:
+            if not self._check_auth():
+                return
             try:
                 sse_handler(self, sse_params or {})
             except Exception as exc:
@@ -1293,7 +1411,7 @@ def _make_server(host: str, port: int) -> _ThreadingServer:
 
 
 def _auto_start_configured_bots() -> None:
-    """Start every IM bot whose credentials + SDK are ready.
+    """Start every auto-start-enabled IM bot whose credentials + SDK are ready.
 
     Replaces the old `launch_options.<key>` opt-in flag pattern: if the user
     bothered to put `fs_app_id` + `fs_app_secret` in the config and `pip
@@ -1302,12 +1420,17 @@ def _auto_start_configured_bots() -> None:
     single-instance lock port) are skipped.
     """
     try:
+        from launcher.bot_manager import BOT_SPECS
         bm = _bm()
         statuses = bm.status_all()
     except Exception as exc:
         print(f"[api_server] auto-start bots: status probe failed: {exc}", flush=True)
         return
     for key, st in statuses.items():
+        spec = BOT_SPECS.get(key)
+        if spec is not None and not spec.auto_start:
+            print(f"[api_server] auto-start bot {key}: skipped (disabled by default)", flush=True)
+            continue
         if st.running:
             continue
         if not (st.configured and st.sdk_installed):
@@ -1355,6 +1478,41 @@ def _auto_start_scheduler() -> None:
         _scheduler_proc = None
 
 
+def _cleanup_registered_processes() -> None:
+    try:
+        from launcher.process_registry import get_registry
+        reg = get_registry(_project_root())
+        for row in list(reg.list()):
+            label = str(row.get("label") or "")
+            kind = str(row.get("kind") or "")
+            if label.startswith("bot:") or label.startswith("session:") or kind in {"bot", "streamlit", "session"}:
+                reg.kill(label or int(row.get("pid", 0)), force=True, timeout=3.0)
+        reg.cleanup_dead()
+    except Exception as exc:
+        print(f"[api_server] registered process cleanup failed: {exc}", flush=True)
+
+
+def _begin_shutdown() -> None:
+    """Idempotently stop background children and the HTTP server."""
+    global _httpd, _shutdown_started
+    with _shutdown_lock:
+        if _shutdown_started:
+            return
+        _shutdown_started = True
+    _shutdown_children()
+    if _project_manager is not None:
+        try:
+            _project_manager.shutdown_all()
+        except Exception as exc:
+            print(f"[api_server] project shutdown failed: {exc}", flush=True)
+    _cleanup_registered_processes()
+    if _httpd is not None:
+        try:
+            _httpd.shutdown()
+        except Exception as exc:
+            print(f"[api_server] http shutdown failed: {exc}", flush=True)
+
+
 def _shutdown_children() -> None:
     """atexit hook: kill every bot we spawned + the scheduler subprocess.
 
@@ -1387,10 +1545,25 @@ def serve(port: int | None = None, host: str = "127.0.0.1") -> None:
       - every IM bot whose credentials + SDK are present (BotManager.start)
       - the L4 reflect/scheduler.py child (if launch_options.scheduler=True)
     On exit (KeyboardInterrupt / SIGTERM / atexit) all spawned children are killed.
+
+    Security: refuses to bind to a non-loopback host without
+    ``WLWL_API_AUTH_TOKEN`` set, since that would expose the agent's
+    full GUI surface (which can spawn IM bots, run code via `code_run`
+    via ``trajectory`` reads, etc.) to anyone on the network.
     """
+    is_loopback = host in ("127.0.0.1", "::1", "localhost")
+    has_token = bool((os.environ.get("WLWL_API_AUTH_TOKEN") or "").strip())
+    if not is_loopback and not has_token:
+        raise SystemExit(
+            f"[api_server] refusing to bind {host!r} without WLWL_API_AUTH_TOKEN. "
+            "Either set the env var to enable bearer-token auth, or bind to 127.0.0.1."
+        )
+    global _httpd, _shutdown_started
+    _shutdown_started = False
     if port is None:
         port = _free_port()
     httpd = _make_server(host, port)
+    _httpd = httpd
     _auto_start_configured_bots()
     _auto_start_scheduler()
     atexit.register(_shutdown_children)
@@ -1401,6 +1574,7 @@ def serve(port: int | None = None, host: str = "127.0.0.1") -> None:
         pass
     finally:
         httpd.server_close()
+        _httpd = None
         _shutdown_children()
 
 

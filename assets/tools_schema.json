@@ -86,6 +86,25 @@
       "required": ["sop_id"]}}
   },
   {"type": "function", "function": {
+    "name": "web_search",
+    "description": "Real-time web search via Grok native live_search (web/x/news) + Tavily REST in parallel. Use when the answer needs current/external info (markets, academic, news, product comparisons, regulations). Workflow: first try sop_search for an internal SOP; if nothing fits, call web_search. For deep multi-hop research, follow memory/web_search_sop.md to spawn a subagent. Always cite urls in your reply. Never silent-fail — even if one source errors, the other side's results are returned with an [error] banner.",
+    "parameters": {"type": "object", "properties": {
+      "query": {"type": "string", "description": "Search query (zh or en)."},
+      "sources": {"type": "array", "items": {"type": "string", "enum": ["web", "x", "news"]}, "description": "Grok native search sources. Default [web,x,news]."},
+      "max_results": {"type": "integer", "description": "Tavily result count, 1-20. Default 5."},
+      "depth": {"type": "string", "enum": ["basic", "advanced"], "description": "Tavily depth. Use 'advanced' for Chinese queries or complex/multi-step questions."}},
+      "required": ["query"]}}
+  },
+  {"type": "function", "function": {
+    "name": "wechat_send",
+    "description": "Send a WeChat message to a contact or group via wxauto (UI automation). Outbound only — no history reads, no listeners. Prerequisites: PC WeChat (Windows) running, logged in, foregroundable; `pip install wxauto`. Tested on WeChat 3.9.x; on 4.x or version mismatch the call returns an error string and you should fall back via `sop_read wechat_ljqctrl_sop`. Side effects are real and irreversible — the user will see the message land. Do not call without explicit user instruction.",
+    "parameters": {"type": "object", "properties": {
+      "to": {"type": "string", "description": "Contact remark / nickname / group name. Must be searchable from the recipient's WeChat address book (the same string you'd type in the search bar)."},
+      "text": {"type": "string", "description": "Plain-text message body. Newlines are sent literally (no Ctrl+Enter quirk)."},
+      "files": {"type": "array", "items": {"type": "string"}, "description": "Optional list of absolute local file paths to send as attachments after the text."}},
+      "required": ["to", "text"]}}
+  },
+  {"type": "function", "function": {
     "name": "mcp_call",
     "description": "Single-entry gateway to every configured MCP (Model Context Protocol) server. Use this to access external capabilities the user has installed (filesystem servers, GitHub, databases, custom internal tools, etc.) without GA needing a dedicated tool for each. Three usage patterns: (1) Call with NO arguments to list all configured servers. (2) Call with only `server` set to list the tools that server exposes. (3) Call with `server`, `tool`, and `arguments` to actually invoke a tool. Always discover before invoking — server tool names and schemas are user-controlled and not knowable in advance. Returns plain text suitable for direct reading.",
     "parameters": {"type": "object", "properties": {

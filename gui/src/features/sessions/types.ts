@@ -36,6 +36,23 @@ export const projectsListSchema = z.object({
 });
 export type ProjectsList = z.infer<typeof projectsListSchema>;
 
+export const chatMessageSchema = z.object({
+  id: z.string(),
+  seq: z.number().int(),
+  role: z.enum(['user', 'assistant', 'system']),
+  content: z.string(),
+  status: z.enum(['running', 'done', 'error', 'aborted']).default('done'),
+  created_at: z.string(),
+  updated_at: z.string().optional(),
+});
+export type ChatMessage = z.infer<typeof chatMessageSchema>;
+
+export const chatMessagesSchema = z.object({
+  messages: z.array(chatMessageSchema),
+  running: z.boolean().optional(),
+});
+export type ChatMessages = z.infer<typeof chatMessagesSchema>;
+
 export const apiConfigSchema = z.object({
   kind: z.string(),
   name: z.string(),

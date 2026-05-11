@@ -53,6 +53,8 @@ def _is_alive(pid: int) -> bool:
                     ["tasklist", "/FI", f"PID eq {pid}"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=3,
                     creationflags=CREATE_NO_WINDOW,
                 )
@@ -194,7 +196,15 @@ class ProcessRegistry:
                 if force:
                     args.append("/F")
                 try:
-                    r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, creationflags=CREATE_NO_WINDOW)
+                    r = subprocess.run(
+                        args,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=timeout,
+                        creationflags=CREATE_NO_WINDOW,
+                    )
                     msgs.append(f"pid={pid} taskkill rc={r.returncode}")
                 except Exception as exc:
                     msgs.append(f"pid={pid} taskkill failed: {exc}")

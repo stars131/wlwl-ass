@@ -119,7 +119,7 @@ def load_env(path: str | None = None, *, override: bool = False) -> int:
     return n
 
 
-def _default_env_path() -> str:
+def _default_env_path(project_root: str | None = None) -> str:
     """Where to find ``.env``.
 
     Resolution order: ``WLWL_ENV_FILE`` env var (used by tests + the
@@ -131,6 +131,8 @@ def _default_env_path() -> str:
     override = os.environ.get("WLWL_ENV_FILE")
     if override:
         return override
+    if project_root:
+        return os.path.join(project_root, ".env")
     project_root = os.environ.get("WLWL_PROJECT_ROOT")
     if project_root:
         return os.path.join(project_root, ".env")
@@ -213,12 +215,12 @@ def synthesize_mykeys(env: dict[str, str] | None = None) -> dict[str, Any]:
     return out
 
 
-def bootstrap(*, override: bool = False) -> tuple[int, str]:
+def bootstrap(*, override: bool = False, project_root: str | None = None) -> tuple[int, str]:
     """One-shot ``.env`` loader for use early in the launcher path.
 
     Returns ``(vars_loaded, path)``. Safe to call repeatedly — re-loading
     only re-applies values the shell hasn't overridden.
     """
-    path = _default_env_path()
+    path = _default_env_path(project_root)
     n = load_env(path, override=override)
     return n, path

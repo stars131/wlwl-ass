@@ -33,6 +33,7 @@ class BotSpec:
     sdk_modules: tuple[str, ...]   # required python imports for "sdk_installed"
     lock_port: int | None  # frontends/*app.py ensure_single_instance port; None if absent
     log_filename: str  # name under temp/ that the bot writes to
+    auto_start: bool = True  # whether GUI launch should start it automatically
 
 
 BOT_SPECS: dict[str, BotSpec] = {
@@ -49,7 +50,7 @@ BOT_SPECS: dict[str, BotSpec] = {
     "feishu": BotSpec(
         key="feishu", display_name="飞书", script="fsapp.py",
         mykey_fields=("fs_app_id", "fs_app_secret"), sdk_modules=("lark_oapi",),
-        lock_port=None, log_filename="fsapp.log",
+        lock_port=19532, log_filename="fsapp.log",
     ),
     "wecom": BotSpec(
         key="wecom", display_name="企业微信", script="wecomapp.py",
@@ -65,7 +66,7 @@ BOT_SPECS: dict[str, BotSpec] = {
     "wechat": BotSpec(
         key="wechat", display_name="微信", script="wechatapp.py",
         mykey_fields=(), sdk_modules=("Crypto", "qrcode"),
-        lock_port=None, log_filename="wechatapp.log",
+        lock_port=19531, log_filename="wechatapp.log", auto_start=False,
     ),
 }
 
@@ -102,6 +103,16 @@ def _port_in_use(port: int, host: str = "127.0.0.1", timeout: float = 0.2) -> bo
         with socket.create_connection((host, port), timeout=timeout):
             return True
     except OSError:
+        return False
+
+
+def _registered_alive(base_dir: str, key: str) -> bool:
+    try:
+        from launcher.process_registry import get_registry
+        reg = get_registry(base_dir)
+        reg.cleanup_dead()
+        return any(bool(row.get("alive")) for row in reg.get_by_label(f"bot:{key}"))
+    except Exception:
         return False
 
 
@@ -146,6 +157,8 @@ class BotManager:
         running_external = False
         if not running_self and spec.lock_port is not None:
             running_external = _port_in_use(spec.lock_port)
+        if not running_self and not running_external:
+            running_external = _registered_alive(self.base_dir, key)
         return BotStatus(
             key=key,
             display_name=spec.display_name,
@@ -175,18 +188,27 @@ class BotManager:
         if not st.sdk_installed:
             return False, f"缺少依赖: pip install {' '.join(st.missing_modules)}"
         with self._lock:
+            os.makedirs(self.temp_dir, exist_ok=True)
+            log_path = os.path.join(self.temp_dir, spec.log_filename)
+            log_f = open(log_path, "a", encoding="utf-8", errors="replace", buffering=1)
+            log_f.write(f"\n\n=== spawn {key} pid=pending ===\n")
             try:
                 proc = subprocess.Popen(
                     [sys.executable, os.path.join(self.frontends_dir, spec.script)],
                     cwd=self.base_dir,
+                    stdout=log_f,
+                    stderr=subprocess.STDOUT,
                     creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
                 )
             except Exception as exc:
+                log_f.close()
                 return False, f"启动失败: {exc}"
+            log_f.write(f"=== spawned {key} pid={proc.pid} ===\n")
             self._procs[key] = proc
         # Best-effort: surface the bot in the central process registry too.
         try:
             from launcher.process_registry import get_registry
+            get_registry(self.base_dir).unregister_label(f"bot:{key}")
             get_registry(self.base_dir).register(
                 f"bot:{key}",
                 proc.pid,
@@ -203,14 +225,36 @@ class BotManager:
             proc = self._procs.get(key)
         if proc is None or proc.poll() is not None:
             self._procs.pop(key, None)
+            try:
+                from launcher.process_registry import get_registry
+                ok, msg = get_registry(self.base_dir).kill(f"bot:{key}", force=True, timeout=timeout)
+                if ok:
+                    return True, msg
+            except Exception:
+                pass
             return True, "未在运行"
         try:
-            proc.terminate()
-            try:
-                proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=timeout)
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=timeout,
+                    creationflags=CREATE_NO_WINDOW,
+                )
+                try:
+                    proc.wait(timeout=timeout)
+                except Exception:
+                    pass
+            else:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=timeout)
         except Exception as exc:
             return False, f"停止失败: {exc}"
         finally:
@@ -223,7 +267,7 @@ class BotManager:
         return True, "已停止"
 
     def stop_all(self) -> None:
-        for key in list(self._procs):
+        for key in list(BOT_SPECS):
             try:
                 self.stop(key)
             except Exception:

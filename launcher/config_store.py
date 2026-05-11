@@ -177,13 +177,15 @@ def _save_file(path: str, data: dict[str, Any]) -> None:
     payload = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=False)
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         f.write(payload)
-    os.replace(tmp, path)
-    # POSIX-only — chmod is a no-op on Windows for these bits, but the
+    # POSIX-only — chmod 600 BEFORE the atomic replace, so the file at `path`
+    # never exists with default umask (potentially world-readable) for any
+    # window. On Windows os.chmod is largely a no-op for these bits, but the
     # default user-home ACL already restricts other users.
     try:
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
         pass
+    os.replace(tmp, path)
 
 
 # ─── Keyring resolution ──────────────────────────────────────────────────
@@ -620,7 +622,9 @@ def synthesize_mykeys_from_store(store: ConfigStore | None = None) -> dict[str, 
                       ("allowed_users", "tg_allowed_users")],
         "feishu":    [("app_id", "fs_app_id"),
                       ("app_secret", "fs_app_secret"),
-                      ("allowed_users", "fs_allowed_users")],
+                      ("allowed_users", "fs_allowed_users"),
+                      ("system_prompt", "fs_system_prompt"),
+                      ("user_prompts", "fs_user_prompts")],
         "qq":        [("app_id", "qq_app_id"),
                       ("app_secret", "qq_app_secret")],
         "wecom":     [("bot_id", "wecom_bot_id"),

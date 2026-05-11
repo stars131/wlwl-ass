@@ -86,6 +86,25 @@
       "required": ["sop_id"]}}
   },
   {"type": "function", "function": {
+    "name": "web_search",
+    "description": "实时联网搜索：Grok 原生 live_search（web/x/news）+ Tavily REST 并发返回。用于需要外部/最新信息的问题（行情/学术/新闻/产品对比/法规）。流程：先 sop_search 看内部 SOP 有没有，没命中再走 web_search。**深度多跳调研要按 memory/web_search_sop.md 起 subagent**。回复必须带 url 引用。任一源失败不阻断——另一源结果照常返回，失败的那侧会带 [error] 横幅",
+    "parameters": {"type": "object", "properties": {
+      "query": {"type": "string", "description": "搜索查询（中英均可）"},
+      "sources": {"type": "array", "items": {"type": "string", "enum": ["web", "x", "news"]}, "description": "Grok native search 数据源。默认 [web,x,news]"},
+      "max_results": {"type": "integer", "description": "Tavily 返回结果数 1-20。默认 5"},
+      "depth": {"type": "string", "enum": ["basic", "advanced"], "description": "Tavily 检索深度。中文问题或复杂多步问题用 advanced"}},
+      "required": ["query"]}}
+  },
+  {"type": "function", "function": {
+    "name": "wechat_send",
+    "description": "通过 wxauto 驱动 PC 微信桌面端给指定联系人/群发消息（UI 控制，单向外发）。前置：本机已登录微信桌面版且窗口可被前台化；已安装 wxauto（pip install wxauto）。已在 WeChat 3.9.x 验证；4.x 或版本不兼容时本工具会返错误字符串，请改用 sop_read wechat_ljqctrl_sop 走 ljqCtrl 坐标回退。副作用真实不可撤销——发出去用户立刻看见。无明确指令不要主动调。",
+    "parameters": {"type": "object", "properties": {
+      "to": {"type": "string", "description": "联系人备注/微信昵称/群名，需在通讯录中可被搜索框搜到（与你在搜索栏输入的字符串一致）"},
+      "text": {"type": "string", "description": "纯文本消息内容。内含换行会原样发出（不是 Ctrl+Enter 那种换行陷阱）"},
+      "files": {"type": "array", "items": {"type": "string"}, "description": "可选附件本地绝对路径列表，文本发送后依序作为附件发出"}},
+      "required": ["to", "text"]}}
+  },
+  {"type": "function", "function": {
     "name": "mcp_call",
     "description": "**单工具入口**，统一访问用户已配置的所有 MCP（Model Context Protocol）外部服务（文件系统/GitHub/数据库/自定义内部工具等），GA 不为每个 MCP 工具单独开原子工具。三种用法：(1) 不带参数调用 → 列出所有已配置的 server；(2) 只填 server → 列出该 server 的工具清单；(3) 同时填 server/tool/arguments → 实际调用。调用前必须先发现——server 工具名和 schema 由用户控制、事先不可知。返回明文",
     "parameters": {"type": "object", "properties": {

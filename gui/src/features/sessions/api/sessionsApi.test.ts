@@ -98,6 +98,29 @@ describe('sessionsApi', () => {
     expect(fetchMock.mock.calls[0]![1].method).toBe('POST');
   });
 
+  it('sendProjectMessage posts text and parses messages', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        running: true,
+        messages: [{
+          id: 'm_1',
+          seq: 1,
+          role: 'user',
+          content: 'hello',
+          status: 'done',
+          created_at: '2026-01-01T00:00:00',
+        }],
+      }),
+    );
+    globalThis.fetch = fetchMock;
+    const data = await api.sendProjectMessage('p_x', 'hello');
+
+    expect(data.messages).toHaveLength(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe('http://t.local/api/projects/p_x/messages');
+    expect(fetchMock.mock.calls[0]![1].method).toBe('POST');
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body as string)).toEqual({ text: 'hello' });
+  });
+
   it('listApiConfigs unwraps the configs array', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
       jsonResponse({ configs: [{ kind: 'native_oai', name: 'gpt' }] }),

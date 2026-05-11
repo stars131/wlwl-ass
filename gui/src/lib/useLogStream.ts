@@ -17,7 +17,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { getApiBase } from '@/lib/env';
+import { appendAuthTokenParam, getApiBase } from '@/lib/env';
 
 export type StreamStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
 
@@ -72,7 +72,7 @@ export function useLogStream(
       setStatus('idle');
       return;
     }
-    const url = `${getApiBase()}${path}`;
+    const url = appendAuthTokenParam(`${getApiBase()}${path}`);
     setStatus('connecting');
     setError(null);
     linesRef.current = [];

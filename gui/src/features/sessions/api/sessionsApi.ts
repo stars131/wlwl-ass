@@ -4,14 +4,16 @@
 import { z } from 'zod';
 
 import { ApiError } from '@/lib/api';
-import { getApiBase } from '@/lib/env';
+import { apiHeaders, getApiBase } from '@/lib/env';
 
 import {
+  chatMessagesSchema,
   configsListSchema,
   profilesStateSchema,
   projectSchema,
   projectsListSchema,
   type ApiConfig,
+  type ChatMessages,
   type Project,
   type ProfilesState,
   type ProjectsList,
@@ -25,8 +27,8 @@ async function request<S extends z.ZodTypeAny>(
   const url = `${getApiBase()}${path}`;
   const { body, ...restInit } = init ?? {};
   const fetchInit: RequestInit = {
-    headers: { 'content-type': 'application/json' },
     ...restInit,
+    headers: apiHeaders(restInit.headers),
   };
   if (body !== undefined) {
     fetchInit.body = typeof body === 'string' ? body : JSON.stringify(body);
@@ -120,6 +122,24 @@ export async function openProjectInBrowser(id: string): Promise<{ url: string }>
     { method: 'POST', body: {} },
   );
   return { url: data.url };
+}
+
+export function listProjectMessages(id: string): Promise<ChatMessages> {
+  return request(`/api/projects/${encodeURIComponent(id)}/messages`, chatMessagesSchema);
+}
+
+export function sendProjectMessage(id: string, text: string): Promise<ChatMessages> {
+  return request(`/api/projects/${encodeURIComponent(id)}/messages`, chatMessagesSchema, {
+    method: 'POST',
+    body: { text },
+  });
+}
+
+export function abortProjectMessage(id: string): Promise<ChatMessages> {
+  return request(`/api/projects/${encodeURIComponent(id)}/messages/abort`, chatMessagesSchema, {
+    method: 'POST',
+    body: {},
+  });
 }
 
 // ── Auto-checkpoint resume browser (#O) ──────────────────────────────

@@ -49,8 +49,12 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
                 logs.append(line)
                 try: print(line, end="")
                 except (UnicodeEncodeError, OSError): pass  # 控制台编码/管道关闭等可忽略
-        except Exception:  # 进程退出 / IO 异常都吞掉，由外层 process.poll() 处理
-            pass
+        except Exception as _read_err:  # 进程退出 / IO 异常都吞掉，由外层 process.poll() 处理
+            # 至少留一行 stderr 痕迹，避免静默调试黑箱
+            try:
+                print(f"[code_run stream_reader] {type(_read_err).__name__}: {_read_err}", file=sys.stderr)
+            except (UnicodeEncodeError, OSError):
+                pass
 
     try:
         process = subprocess.Popen(
@@ -566,6 +570,41 @@ class WlwlAssHandler(BaseHandler):
         yield f"[sop_read] {sop_id}\n"
         return StepOutcome(result, next_prompt="\n")
 
+    def do_web_search(self, args, response):
+        '''Grok 原生 live_search + Tavily REST 并发联网搜索。详见 memory/web_search_sop.md。'''
+        from tools.web_search import web_search
+        query = (args.get('query') or '').strip()
+        if not query:
+            return StepOutcome("[web_search error] query is required", next_prompt="\n")
+        try:
+            depth = str(args.get('depth') or 'basic').lower()
+            max_results = int(args.get('max_results') or 5)
+            sources = args.get('sources')
+            if isinstance(sources, str):
+                sources = [s.strip() for s in sources.split(',') if s.strip()]
+            result = web_search(query, sources=sources, max_results=max_results, depth=depth)
+        except Exception as e:
+            return StepOutcome(f"[web_search error] {format_error(e)}", next_prompt="\n")
+        yield f"[web_search] {query!r} (depth={depth})\n"
+        return StepOutcome(result, next_prompt="\n")
+
+    def do_wechat_send(self, args, response):
+        '''wxauto 驱动 PC 微信外发。失败请 sop_read wechat_ljqctrl_sop 走坐标回退。'''
+        from tools.wechat import wechat_send
+        to = (args.get('to') or '').strip()
+        text = (args.get('text') or '').strip()
+        files = args.get('files')
+        if not to or not text:
+            return StepOutcome("[wechat_send error] to + text required", next_prompt="\n")
+        if not isinstance(files, list):
+            files = None
+        try:
+            result = wechat_send(to, text, files=files)
+        except Exception as e:
+            return StepOutcome(f"[wechat_send error] {format_error(e)}", next_prompt="\n")
+        yield f"[wechat_send] {to!r} ({len(text)} chars)\n"
+        return StepOutcome(result, next_prompt="\n")
+
     def do_mcp_call(self, args, response):
         '''单一 MCP 工具入口：列出 server / 列出工具 / 实际调用，三种语义共享同一工具。'''
         from tools.mcp_client import mcp_call
@@ -860,7 +899,7 @@ class WlwlAssHandler(BaseHandler):
         if self.working.get('related_sop'): prompt += f"\n有不清晰的地方请再次读取{self.working.get('related_sop')}"
         if getattr(self.parent, 'verbose', False):
             try: print(prompt)
-            except: pass
+            except (UnicodeEncodeError, OSError): pass  # 控制台编码/管道关闭等可忽略
         return prompt
 
     def turn_end_callback(self, response, tool_calls, tool_results, turn, next_prompt, exit_reason):

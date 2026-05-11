@@ -99,6 +99,20 @@ def test_autostart_skips_already_running_bot(monkeypatch):
     assert fake.started == []
 
 
+def test_autostart_skips_wechat_by_default(monkeypatch):
+    from launcher import api_server
+
+    fake = _FakeBotManager({
+        "feishu": _FakeStatus(configured=True, sdk_installed=True),
+        "wechat": _FakeStatus(configured=True, sdk_installed=True),
+    })
+    monkeypatch.setattr(api_server, "_bot_manager", fake)
+    monkeypatch.setattr(api_server, "_bm", lambda: fake)
+
+    api_server._auto_start_configured_bots()
+    assert fake.started == ["feishu"]
+
+
 # ── _auto_start_scheduler ───────────────────────────────────────────────
 
 

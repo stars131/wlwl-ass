@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { ApiError } from '@/lib/api';
-import { getApiBase } from '@/lib/env';
+import { apiHeaders, getApiBase } from '@/lib/env';
 
 import { skillsResponseSchema, type SkillsResponse } from '../types';
 
@@ -13,8 +13,8 @@ async function request<S extends z.ZodTypeAny>(
   const url = `${getApiBase()}${path}`;
   const { body, ...restInit } = init ?? {};
   const fetchInit: RequestInit = {
-    headers: { 'content-type': 'application/json' },
     ...restInit,
+    headers: apiHeaders(restInit.headers),
   };
   if (body !== undefined) {
     fetchInit.body = typeof body === 'string' ? body : JSON.stringify(body);

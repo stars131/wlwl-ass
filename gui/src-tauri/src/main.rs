@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, RunEvent, WindowEvent,
+    Manager, RunEvent,
 };
 
 /// Shared runtime guard that lives for the lifetime of the Tauri app.
@@ -39,6 +39,7 @@ fn run() -> anyhow::Result<()> {
     let runtime = PythonRuntime::start(&project_root)
         .context("failed to start python launcher.api_server")?;
     let api_base = runtime.base_url();
+    let api_token = std::env::var("WLWL_API_AUTH_TOKEN").unwrap_or_default();
     log::info!("python api server up at {api_base}");
 
     let state = AppState {
@@ -49,32 +50,19 @@ fn run() -> anyhow::Result<()> {
         .plugin(tauri_plugin_log::Builder::default().build())
         .manage(state)
         .invoke_handler(tauri::generate_handler![get_api_base])
-        .on_window_event(|window, event| {
-            // Close-to-tray: clicking the window's X hides the window instead
-            // of exiting. The tray's "Quit" item is the only path that closes
-            // the process (and triggers RunEvent::ExitRequested → python cleanup).
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" {
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
-            }
-        })
         .setup(move |app| {
-            // Inject API base into the webview before any user JS runs.
             let init = format!(
-                "window.__GA_API_BASE__ = {};",
-                serde_json::to_string(&api_base).expect("api base is valid json")
+                "window.__GA_API_BASE__ = {}; window.__GA_API_AUTH_TOKEN__ = {};",
+                serde_json::to_string(&api_base).expect("api base is valid json"),
+                serde_json::to_string(&api_token).expect("api token is valid json")
             );
             for (_label, window) in app.webview_windows() {
                 window.eval(&init)?;
             }
 
-            // Build system tray. Skip silently if no app icon is bundled
-            // (icons/ ships placeholders only — packaged builds will have one).
             if let Some(icon) = app.default_window_icon().cloned() {
-                let show_item = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
-                let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+                let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+                let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
                 let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
                 let _tray = TrayIconBuilder::with_id("wlwl-ass-tray")
@@ -94,12 +82,12 @@ fn run() -> anyhow::Result<()> {
                             ..
                         } = event
                         {
-                            toggle_main_window(tray.app_handle());
+                            bring_to_front(tray.app_handle());
                         }
                     })
                     .build(app)?;
             } else {
-                log::warn!("no default window icon — tray icon disabled");
+                log::warn!("no default window icon; tray icon disabled");
             }
             Ok(())
         })
@@ -125,16 +113,5 @@ fn bring_to_front(app: &tauri::AppHandle) {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
-    }
-}
-
-fn toggle_main_window(app: &tauri::AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
-        match w.is_visible() {
-            Ok(true) => {
-                let _ = w.hide();
-            }
-            _ => bring_to_front(app),
-        }
     }
 }

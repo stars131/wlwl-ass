@@ -41,12 +41,12 @@ function makeSettings(overrides: Record<string, unknown> = {}) {
 }
 
 describe('settingsApi', () => {
-  it('getSettings unwraps the settings field', async () => {
+  it('getSettings unwraps the settings field and tolerates extra backend keys', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
-      jsonResponse({ settings: makeSettings({ feishu: true }) }),
+      jsonResponse({ settings: makeSettings({ scheduler: false, feishu: true }) }),
     );
     const s = await api.getSettings();
-    expect(s.feishu).toBe(true);
+    expect(s.scheduler).toBe(false);
     expect(s.permission_mode).toBe('auto');
   });
 

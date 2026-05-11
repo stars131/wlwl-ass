@@ -145,8 +145,8 @@ def test_xiaomi_stt_empty_audio_returns_empty_text():
 
 
 @pytest.mark.skipif(
-    not os.environ.get("WLWL_XIAOMI_API_KEY"),
-    reason="needs WLWL_XIAOMI_API_KEY in environment",
+    not os.environ.get("WLWL_RUN_LIVE_TESTS") or not os.environ.get("WLWL_XIAOMI_API_KEY"),
+    reason="needs WLWL_RUN_LIVE_TESTS=1 and WLWL_XIAOMI_API_KEY in environment",
 )
 def test_xiaomi_tts_live_synthesizes_real_wav():
     from llmcore.worker import InvokeRequest

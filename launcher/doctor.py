@@ -121,7 +121,6 @@ def check_core_deps() -> list[Check]:
 
 _GUI_DEPS = [
     ("PySide6", "Qt legacy launcher (`launch.pyw --qt-legacy`)"),
-    ("streamlit", "default per-session chat UI spawned from the Sessions tab"),
 ]
 
 
@@ -236,7 +235,14 @@ def check_bots() -> list[Check]:
         missing_modules = [
             m for m in spec.sdk_modules if importlib.util.find_spec(m) is None
         ]
-        if not configured and not missing_modules:
+        if not spec.auto_start:
+            packages = " ".join(_pip_name(m) for m in missing_modules)
+            out.append(Check(
+                f"bot.{key}", f"bot {spec.display_name}: disabled by default", "info",
+                "Optional. It will not auto-start on GUI launch; start it manually from the Bots tab when needed.",
+                f"pip install {packages}" if packages else None,
+            ))
+        elif not configured and not missing_modules:
             out.append(Check(
                 f"bot.{key}", f"bot {spec.display_name}: not configured", "info",
                 f"Optional. Set {', '.join(spec.mykey_fields)} via the GUI's Bots tab "

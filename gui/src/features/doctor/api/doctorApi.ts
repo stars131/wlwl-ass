@@ -1,13 +1,13 @@
 import { z } from 'zod';
 
 import { ApiError } from '@/lib/api';
-import { getApiBase } from '@/lib/env';
+import { apiHeaders, getApiBase } from '@/lib/env';
 
 import { doctorReportSchema, type DoctorReport } from '../types';
 
 async function request<S extends z.ZodTypeAny>(path: string, schema: S): Promise<z.output<S>> {
   const url = `${getApiBase()}${path}`;
-  const res = await fetch(url, { headers: { 'content-type': 'application/json' } });
+  const res = await fetch(url, { headers: apiHeaders() });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new ApiError(`HTTP ${res.status} on ${path}: ${body.slice(0, 200)}`, res.status, url);

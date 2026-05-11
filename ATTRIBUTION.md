@@ -201,6 +201,111 @@ history 等）不需要在此登记，它们留在 `README.md` 即可。
     files are included in the wheel. We carry no model weights in this
     repository.
 
+### 12. Sophub SOP bulk import (7 SOPs from fudankw.cn/sophub)
+
+- **Source / 源地址**: https://fudankw.cn/sophub/
+  - DeepSearch: `https://fudankw.cn/sophub/sop/69f325a2cb3bf06150bb3baf` (author: `ace42@GA`)
+  - DeepResearch: `https://fudankw.cn/sophub/sop/69f207e974962f84e0625e0d` (author: `sophub`)
+  - Code Review Principles: `https://fudankw.cn/sophub/sop/69f2112374962f84e0625e0f` (author: `ljq`)
+  - GitHub Project Learning: `https://fudankw.cn/sophub/sop/69f20d4e74962f84e0625e0e` (author: `GenericAgent`)
+  - Pandoc: `https://fudankw.cn/sophub/sop/69f22686ba77d8b04fb0b9be` (author: `wellsoren`)
+  - JS Hook Playbook: `https://fudankw.cn/sophub/sop/69f509090399f28c1add9e8e` (author: `ace42@GA`)
+  - Cloudflare Turnstile: `https://fudankw.cn/sophub/sop/69f32598cb3bf06150bb3bab` (author: `ace42@GA`)
+- **License / 协议**: Sophub-shared (each SOP uploaded by its author to the
+  public Sophub registry; no SPDX declared upstream — treated as
+  user-contributed content with attribution).
+- **Borrowed Scope / 借鉴范围**: 7 markdown SOP files placed verbatim under
+  `memory/`:
+  - `memory/deepsearch_sop.md` (44.3KB) — Grok+Tavily+FireCrawl 3-path search,
+    search-planning rubric, evidence standards (≥2 independent sources).
+  - `memory/deepresearch_sop.md` (6.2KB) — DAG decomposition + main/sub-agent
+    context isolation rules (5-field `context.json` red-line).
+  - `memory/code_review_sop.md` (1.4KB) — 8 universal good-code principles.
+  - `memory/github_project_sop.md` (2.3KB) — 5-step methodology for
+    unfamiliar GitHub project comprehension.
+  - `memory/pandoc_sop.md` (15.9KB) — pandoc 3.x format-conversion reference.
+  - `memory/js_hook_sop.md` (43.9KB) — JS runtime hook playbook (33 presets,
+    5 injection channels, 5 RE paradigms, anti-debug bypass).
+  - `memory/cloudflare_turnstile_sop.md` (13.1KB) — CF Turnstile 3-tier
+    handling (physical click / callback hijack / cloud solve).
+- **Our Modifications / 我们的修改**: None to content — verbatim. Each file
+  appends a 1-line provenance footer (Sophub id + author + fetched date).
+  DeepSearch SOP references the upstream author's `.env [LLM_APIS]` config
+  convention; readers should map those to our
+  `launcher.config set providers.grok` equivalent (see `docs/CONFIG.md`).
+  Companion to the in-house `web_search_sop.md` (the Mode-1 quickstart
+  written 2026-05-09).
+- **Borrowed On / 借鉴日期**: 2026-05-09
+- **Notes / 备注**:
+  - All 7 passed `tools.skills_guard.scan` defense-in-depth on full content
+    (not just preview) — no role-hijack / override-system-prompt findings.
+  - Imported via `scripts/import_sophub_sops.py` (re-runnable; will
+    overwrite if an upstream SOP is updated).
+  - Indexed in `memory/global_mem_insight.txt` L3 list so the agent
+    discovers them at navigation time.
+  - `cloudflare_turnstile_sop.md` and `js_hook_sop.md` are dual-use —
+    useful for legitimate automation / RE engagements, consistent with the
+    existing `tmwebdriver_sop` domain. Not a green-light to bypass
+    security on third-party services without authorisation.
+
+### 13. wxauto (Python library)
+
+- **Source / 源地址**: https://github.com/cluic/wxauto
+- **License / 协议**: MIT
+- **Borrowed Scope / 借鉴范围**: Optional runtime dependency. Powers the
+  `wechat_send` agent tool (`tools/wechat.py`) — drives the running PC
+  WeChat client window via Microsoft UIA to search a contact, switch
+  chats, paste text, optionally send file attachments, and press Enter.
+  Outbound only — we do not consume any of wxauto's history-reading or
+  listener APIs.
+- **Our Modifications / 我们的修改**: None — only public `WeChat()`,
+  `SendMsg(who=...)`, `SendFiles(filepath=..., who=...)` are called.
+  Listed in `pyproject.toml [project.optional-dependencies] wechat`,
+  pinned `>=3.9`. Lazy-imported so non-Windows / non-WeChat installs are
+  unaffected.
+- **Borrowed On / 借鉴日期**: 2026-05-09
+- **Notes / 备注**:
+  - Windows-only; tested against PC WeChat 3.9.x. WeChat 4.x compatibility
+    is not guaranteed by upstream — when wxauto fails on a 4.x client,
+    `wechat_send` returns an error string and the agent is expected to
+    fall back via `sop_read wechat_ljqctrl_sop` (`memory/wechat_ljqctrl_sop.md`).
+  - Side effects are real and irreversible — the tool is registered with
+    `risk="high"` and `ASK` permission in `permissions.py`.
+
+### 14. lark-oapi (Lark / Feishu OpenAPI Python SDK)
+
+- **Source / 源地址**: https://github.com/larksuite/oapi-sdk-python
+- **License / 协议**: MIT
+- **Borrowed Scope / 借鉴范围**: Optional runtime dependency. Two
+  independent surfaces:
+  - **IM (long-running)**: `frontends/fsapp.py` uses
+    `lark.Client.builder()` + `lark.ws.Client` long-connection mode and
+    the `client.im.v1.message` resource for inbound/outbound chat,
+    image/file upload, and message edit. (Original integration; predates
+    this attribution entry.)
+  - **Calendar v4 (new)**: `llmcore/workers/feishu_calendar_storage.py`
+    uses the `client.calendar.v4.calendar` (`primary()`) and
+    `client.calendar.v4.calendar_event` (`create / patch / delete / get
+    / list`) resources to implement the `CalendarStorage` Protocol from
+    `calendar_worker.py`. Activated when
+    `bots.feishu.use_for_calendar=true` in the config store.
+- **Our Modifications / 我们的修改**: None — vanilla SDK use via the
+  builder pattern. Listed in
+  `pyproject.toml [project.optional-dependencies] all-frontends`,
+  pinned `>=1.0` (currently exercised on 1.5.5).
+- **Borrowed On / 借鉴日期**: 2026-05-09 (back-attribution; the IM use
+  predates this commit but was not previously listed)
+- **Notes / 备注**:
+  - The IM and Calendar surfaces share the same `bots.feishu.app_id` /
+    `bots.feishu.app_secret` credentials. The Calendar surface needs the
+    `calendar:calendar` permission scope added to the Feishu app and a
+    re-publish; the IM surface needs `im:message`, `im:message:send_as_bot`,
+    `contact:user.id:readonly`. See `assets/SETUP_FEISHU.md` for the
+    full setup.
+  - Cached `bots.feishu.calendar_id` is auto-discovered on first use
+    (the user's primary calendar). Switching backends (sqlite ↔ feishu)
+    does not migrate historical events; old event ids become stale.
+
 ---
 
 ## Update Protocol / 更新规约
@@ -260,4 +365,4 @@ A new entry is required when any of the following occur:
 
 ---
 
-*Last updated / 最后更新：2026-05-06*
+*Last updated / 最后更新：2026-05-09*

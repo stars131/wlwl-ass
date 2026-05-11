@@ -1,4 +1,5 @@
 import os, sys, threading, queue, time, json, re, random, locale
+from dataclasses import dataclass
 os.environ.setdefault('WLWL_LANG', 'zh' if any(k in (locale.getlocale()[0] or '').lower() for k in ('zh', 'chinese')) else 'en')
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -11,8 +12,10 @@ ensure_safe_std_streams()  # .pyw / 后台模式下 sys.stdout/stderr 可能为 
 # process and won't re-fire on cache busts.
 try:
     from plugins import langfuse_tracing  # noqa: F401 — side-effect tracer install
-except Exception:
-    pass
+except ImportError:
+    pass  # plugin (or langfuse SDK) not installed — silently skip
+except Exception as _lf_exc:  # init bug — don't kill the agent, but surface once
+    print(f"[wlwl-ass] langfuse_tracing init failed (non-fatal): {_lf_exc!r}", file=sys.stderr)
 
 from wlwl_ass import WlwlAssHandler, smart_format, get_global_memory, format_error, consume_file
 from permissions import InteractivePermissionPrompter, PermissionPolicy
@@ -60,16 +63,30 @@ def get_system_prompt():
     prompt += get_global_memory()
     return prompt
 
+@dataclass(frozen=True)
+class AgentRuntimeContext:
+    project_id: str = ''
+    project_name: str = ''
+    project_root: str = ''
+    llm_no: int = 0
+    llm_config_name: str = ''
+    permission_mode: str = 'auto'
+    use_project_context: bool = True
+    autonomous_enabled: bool = False
+    resume_task_id: str | None = None
+
+
 class GeneraticAgent:
-    def __init__(self):
+    def __init__(self, runtime_context: AgentRuntimeContext | None = None):
         script_dir = os.path.dirname(os.path.abspath(__file__))
         os.makedirs(os.path.join(script_dir, 'temp'), exist_ok=True)
+        self.runtime_context = runtime_context
         self.lock = threading.Lock()
         self.task_dir = None
         self.history = []
         self.task_queue = queue.Queue()
         self.is_running = False; self.stop_sig = False
-        self.llm_no = 0;  self.inc_out = False
+        self.llm_no = int(getattr(runtime_context, 'llm_no', 0) or 0);  self.inc_out = False
         self.handler = None; self.verbose = True
         self.permission_mode = 'auto'
         self.permission_policy = None
@@ -87,13 +104,22 @@ class GeneraticAgent:
         # snapshots, just less safely on long tasks.
         try:
             from launcher.auto_checkpoint import install_auto_checkpoint, maybe_apply_resume
-            self._auto_checkpoint_task_id = install_auto_checkpoint(self)
-            maybe_apply_resume(self)
+            resume_task_id = getattr(runtime_context, 'resume_task_id', None) if runtime_context else None
+            project_id = getattr(runtime_context, 'project_id', '') if runtime_context else ''
+            self._auto_checkpoint_task_id = install_auto_checkpoint(
+                self,
+                task_id=resume_task_id,
+                project_id=project_id,
+            )
+            maybe_apply_resume(self, task_id=resume_task_id)
         except Exception as exc:
             print(f"[GeneraticAgent] auto_checkpoint install failed: {exc}")
+        if runtime_context is not None:
+            self.apply_runtime_context(runtime_context)
 
     def load_llm_sessions(self):
-        mykeys, changed = reload_mykeys()
+        project_root = getattr(self.runtime_context, 'project_root', None) if self.runtime_context else None
+        mykeys, changed = reload_mykeys(project_root=project_root)
         if not changed and hasattr(self, 'llmclients'): return
         try: oldhistory = self.llmclient.backend.history
         except (AttributeError, TypeError): oldhistory = None
@@ -154,6 +180,23 @@ class GeneraticAgent:
     def list_llms(self):
         self.load_llm_sessions()
         return [(i, self.get_llm_name(b), i == self.llm_no) for i, b in enumerate(self.llmclients)]
+    def apply_runtime_context(self, ctx):
+        llm_name = str(getattr(ctx, 'llm_config_name', '') or '').strip()
+        if llm_name:
+            selected = self.select_llm_by_name(llm_name)
+            if not selected:
+                self.next_llm(int(getattr(ctx, 'llm_no', 0) or 0))
+        else:
+            self.next_llm(int(getattr(ctx, 'llm_no', 0) or 0))
+        project_root = str(getattr(ctx, 'project_root', '') or '').strip() or None
+        self.configure_cli(
+            permission_mode=str(getattr(ctx, 'permission_mode', 'auto') or 'auto'),
+            project_root=project_root,
+            use_project_context=bool(getattr(ctx, 'use_project_context', True)),
+            interactive=False,
+            cwd_project=True,
+        )
+        self.inc_out = True
     def get_llm_name(self, b=None, model=False):
         b = self.llmclient if b is None else b
         if isinstance(b, dict): return 'BADCONFIG_MIXIN'
@@ -165,6 +208,11 @@ class GeneraticAgent:
         print('Abort current task...')
         self.stop_sig = True
         if self.handler is not None: self.handler.code_stop_signal.append(1)
+
+    def shutdown(self):
+        """Stop the background run loop after the current task is aborted."""
+        self.abort()
+        self.task_queue.put({"_shutdown": True})
             
     def put_task(self, query, source="user", images=None):
         display_queue = queue.Queue()
@@ -192,6 +240,9 @@ class GeneraticAgent:
     def run(self):
         while True:
             task = self.task_queue.get()
+            if task.get("_shutdown"):
+                self.task_queue.task_done()
+                break
             raw_query, source, images, display_queue = task["query"], task["source"], task.get("images") or [], task["output"]
             raw_query = self._handle_slash_cmd(raw_query, display_queue)
             if raw_query is None:

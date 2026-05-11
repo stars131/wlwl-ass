@@ -1,4 +1,4 @@
-"""calendar_worker — SQLite-backed event store.
+"""calendar_worker — pluggable calendar event store.
 
 Capabilities offered:
   - calendar.create_event.v1
@@ -6,8 +6,11 @@ Capabilities offered:
   - calendar.delete_event.v1
   - calendar.query_events.v1
 
-Storage layer is a Protocol so a future GoogleCalendarStorage / NotionStorage
-plugin can swap in without touching the worker.
+Storage layer is a Protocol; current built-in backends:
+  - SQLiteCalendarStorage (default, local file in temp/calendar.db)
+  - FeishuCalendarStorage  (lark-oapi calendar v4, see feishu_calendar_storage.py)
+
+Other backends (Notion, Google) can swap in by implementing CalendarStorage.
 """
 from __future__ import annotations
 
@@ -278,8 +281,13 @@ class CalendarFactory:
 
     def build(self, config: dict, kernel: KernelHandle) -> Worker:
         name = config.get("name") or "calendar"
-        db_path = config.get("db_path") or os.path.join(_default_temp(), "calendar.db")
-        storage = SQLiteCalendarStorage(db_path)
+        backend = (config.get("storage") or "sqlite").lower()
+        if backend == "feishu":
+            from llmcore.workers.feishu_calendar_storage import FeishuCalendarStorage
+            storage: CalendarStorage = FeishuCalendarStorage.from_config_store()
+        else:
+            db_path = config.get("db_path") or os.path.join(_default_temp(), "calendar.db")
+            storage = SQLiteCalendarStorage(db_path)
         return CalendarWorker(name=name, storage=storage)
 
 

@@ -320,7 +320,21 @@ def main(argv: list[str] | None = None) -> int:
     # Ensure default workers exist for MVP / standalone runs.
     k = get_kernel()
     if not any(w.kind == "calendar" for w in k.list_workers()):
-        k.add_worker({"name": "calendar", "kind": "calendar"})
+        try:
+            from launcher.config_store import default_store
+            use_feishu = bool(default_store().get("bots.feishu.use_for_calendar", False))
+        except Exception:
+            use_feishu = False
+        cfg = {"name": "calendar", "kind": "calendar"}
+        if use_feishu:
+            cfg["storage"] = "feishu"
+        try:
+            k.add_worker(cfg)
+        except Exception:
+            log.exception("failed to add calendar worker with storage=%s; "
+                          "retrying with sqlite",
+                          cfg.get("storage", "sqlite"))
+            k.add_worker({"name": "calendar", "kind": "calendar"})
     if not any(w.kind == "inspiration" for w in k.list_workers()):
         k.add_worker({"name": "inspiration", "kind": "inspiration"})
 

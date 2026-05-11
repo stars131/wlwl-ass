@@ -69,6 +69,8 @@ GUI 「API 配置」 tab 保存条目时会按 `kind` 字段自动生成符合�
 | 命令行批改凭据 / 设置                       | `python -m launcher.config set <path> <value>` |
 | 容器化 / CI                                 | 注入环境变量 / 挂载 .env 即可            |
 | 启用 Langfuse tracing                       | `python -m launcher.config set settings.langfuse '{"public_key":"pk-lf-...","secret_key":"sk-lf-...","host":"https://cloud.langfuse.com"}'` |
+| 启用 web_search（Grok 原生 live_search）    | `python -m launcher.config set providers.grok '{"api_key":"xai-...","base_url":"https://api.x.ai/v1","model":"grok-4-fast-reasoning","kind":"oai"}'`（或环境变量 `XAI_API_KEY`） |
+| 启用 web_search（Tavily 第二路）            | `python -m launcher.config set settings.tavily '{"api_key":"tvly-..."}'`（或环境变量 `TAVILY_API_KEY`） |
 | 从老版本 mykey.py 迁过来                    | `python -m launcher.config migrate`（一次性，**会在下个 release 删除**） |
 
 ## 飞书命令

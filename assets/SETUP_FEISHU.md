@@ -167,10 +167,31 @@ def handle(data):
 ```bash
 python -m launcher.config set bots.feishu.app_id "cli_xxxxxxxxxxxxxxxx"
 python -m launcher.config set bots.feishu.app_secret "xxxxxxxxxxxxxxxx"
-python -m launcher.config set bots.feishu.allowed_users '["ou_xxxxxxxxxxxxxxxxxxxxxxxx"]'  # 可选；留空则允许所有人
+python -m launcher.config set bots.feishu.allowed_users '["ou_xxxxxxxxxxxxxxxxxxxxxxxx"]'  # 必填
 ```
 
+> ⚠️ **必填**：`allowed_users` 不再支持「留空 = 允许所有人」。空列表/缺省现在等于**拒绝所有**（agent 自带 `do_code_run`，开放给所有人 = 远程代码执行）。
+> - 单人使用：`["ou_yourid"]`
+> - 公开使用（高风险）：必须显式写 `["*"]`
+> - 多人：`["ou_a", "ou_b"]`
+
 写入位置：`~/.wlwl-ass/config.json`，POSIX 下自动 chmod 600。
+
+### （可选）启用飞书日历作为日程后端
+
+语音/工具产生的日程事件默认写本地 SQLite (`temp/calendar.db`)。要切换为「写到飞书我的日历」：
+
+1. **加权限**：飞书开放平台 →「权限管理」→ 增开 `calendar:calendar`（需要管理员重新审批）。
+2. **打开开关**：
+   ```bash
+   python -m launcher.config set bots.feishu.use_for_calendar true
+   ```
+3. 重启 `python -m launcher.voice_ws`。首启时 `FeishuCalendarStorage` 会调 `primary()` 拉用户主日历的 `calendar_id` 缓存到 `bots.feishu.calendar_id`，之后所有 `calendar.create_event.v1` / `update` / `delete` / `query` 直接读写飞书云。
+
+注意：
+- 切换后端不迁移历史数据，旧 SQLite 事件 id 在飞书侧不可达。
+- 关闭：`python -m launcher.config set bots.feishu.use_for_calendar false`，重启后回退本地 SQLite。
+- 飞书日历事件没有原生 tags 字段；本实现把 `tags` 编进事件描述顶部 `[tags:a,b]` 行，往返保留。
 
 ### 确认 LLM 配置
 
@@ -261,7 +282,7 @@ App ID: cli_xxxxxxxxxxxxxxxx
 
 ### Q: 能否多人同时使用？
 
-**A:** 不能。一个应用只能有一个长连接，连接到一台电脑。每个人需要创建自己的应用。
+**A:** 可以。`frontends/fsapp.py` 已按 `open_id` 隔离会话——每位用户拥有独立的 Agent、history 与工作记忆，互不干扰。一个飞书应用仍只能一台电脑长连接，但同一应用下多用户对话彼此独立。详见下文「多用户隔离与个性化提示词」。
 
 ---
 
@@ -276,6 +297,44 @@ App ID: cli_xxxxxxxxxxxxxxxx
 - 消息通过飞书云转发到你电脑上运行的 `frontends/fsapp.py`
 - Agent 处理请求后，通过飞书 API 回复消息
 - **你的电脑必须保持运行** `frontends/fsapp.py` 才能响应消息
+
+---
+
+## 多用户隔离与个性化提示词
+
+`fsapp.py` 按飞书 `open_id` 维护一个 agent 池：每位用户首次发消息时按需创建独立的 `GeneraticAgent`，闲置 1 小时自动回收。每个 agent 拥有自己的 history、working memory、`backend.history` —— 跨用户不会互相污染。
+
+### 全局飞书提示词（所有用户共享）
+
+```bash
+python -m launcher.config set bots.feishu.system_prompt \
+  "你正在飞书 IM 中与用户对话。回复要简洁，避免大段代码块；重要文件用 [FILE:路径] 标记。"
+```
+
+### 按用户覆盖（per-open_id 个性化）
+
+先发消息让机器人打印你的 `open_id`（终端日志会有 `收到消息 [ou_xxxx]`），然后：
+
+```bash
+python -m launcher.config set bots.feishu.user_prompts.ou_abc123 \
+  "你是张三的私人助理，他在做心理学博士论文，沟通风格直接。"
+
+python -m launcher.config set bots.feishu.user_prompts.ou_xyz789 \
+  "你是李四的工作助手，主要协助 Python 开发，回复时尽量给出代码示例。"
+```
+
+优先级：**`user_prompts[open_id]` > `system_prompt` > 空**。配置改动后重启 `fsapp.py` 生效（`mykeys` 在进程启动时一次性加载）。
+
+### 验证
+
+```bash
+# 1. 设一个明显标记
+python -m launcher.config set bots.feishu.system_prompt "回复必须以 [PROMPT-OK] 开头。"
+# 2. 重启 fsapp.py
+# 3. 任意飞书用户发 "hello"，回复应包含 [PROMPT-OK]
+```
+
+清空覆盖：`python -m launcher.config delete bots.feishu.user_prompts.ou_abc123`
 
 ---
 

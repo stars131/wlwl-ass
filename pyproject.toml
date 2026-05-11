@@ -45,6 +45,12 @@ voice = [
 stt-local = [
     "faster-whisper>=1.2",
 ]
+# WeChat outbound IM via UI automation. Windows-only (drives the PC WeChat
+# client window). Tested against WeChat 3.9.x; 4.x may require the ljqCtrl
+# fallback in memory/wechat_ljqctrl_sop.md.
+wechat = [
+    "wxauto>=3.9",
+]
 test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

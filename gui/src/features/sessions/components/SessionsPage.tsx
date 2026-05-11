@@ -26,8 +26,8 @@ export function SessionsPage(): JSX.Element {
   const [chatProject, setChatProject] = useState<Project | null>(null);
 
   // When the projects list refreshes, hand the up-to-date project object to
-  // the chat drawer so its `running` flag and `port` stay current without
-  // forcing the user to close+reopen.
+  // the chat drawer so its `running` flag stays current without forcing the
+  // user to close+reopen.
   const liveChatProject = chatProject
     ? projects.data?.projects.find((p) => p.id === chatProject.id) ?? chatProject
     : null;

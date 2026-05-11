@@ -234,22 +234,26 @@ class Kernel:
                 break
             time.sleep(0.05)
 
+        # Pop atomically; do shutdown OUTSIDE the lock so a slow third-party
+        # shutdown (closing a network conn, flushing a big spool) doesn't
+        # block every other kernel mutation. Audit also stays outside the lock
+        # since it just publishes to an in-memory bus.
         with self._mutate_lock:
             entry = self._workers.pop(name, None)
             if entry is None:
                 return
             self._refresh_snapshot()
-            try:
-                entry.worker.shutdown(drain_timeout_ms=drain_timeout_ms)
-            except (KeyboardInterrupt, SystemExit):
-                raise
-            except Exception:  # noqa: BLE001 — shutdown is best-effort
-                log.exception("worker shutdown raised; ignoring")
             self._breaker.reset(name)
             self._metrics.drop_worker(name)
-            self._publish_audit("worker_removed", {
-                "name": name, "drained": entry.in_flight == 0, "reason": reason,
-            })
+        try:
+            entry.worker.shutdown(drain_timeout_ms=drain_timeout_ms)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:  # noqa: BLE001 — shutdown is best-effort
+            log.exception("worker shutdown raised; ignoring")
+        self._publish_audit("worker_removed", {
+            "name": name, "drained": entry.in_flight == 0, "reason": reason,
+        })
 
     def reload_worker(self, name: str, *, new_config: dict | None = None) -> WorkerMetadata:
         with self._mutate_lock:

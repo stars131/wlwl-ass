@@ -29,6 +29,18 @@ def try_call_generator(func, *args, **kwargs):
     return ret
 
 class BaseHandler:
+    # Subclasses (e.g. WlwlAssHandler) override these in their __init__, but
+    # we declare class-level defaults so a vanilla BaseHandler can be driven
+    # without AttributeError from agent_runner_loop's `_done_hooks.pop(0)`.
+    _done_hooks: list
+    max_turns: int
+    current_turn: int
+
+    def __init__(self):
+        self._done_hooks = []
+        self.max_turns = 40
+        self.current_turn = 0
+
     def tool_before_callback(self, tool_name, args, response): pass
     def tool_after_callback(self, tool_name, args, response, ret): pass
     def turn_end_callback(self, response, tool_calls, tool_results, turn, next_prompt, exit_reason): return next_prompt
@@ -80,8 +92,22 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema, 
             if cleaned: yield cleaned + '\n'
 
         if not response.tool_calls: tool_calls = [{'tool_name': 'no_tool', 'args': {}}]
-        else: tool_calls = [{'tool_name': tc.function.name, 'args': json.loads(tc.function.arguments), 'id': tc.id}
-                          for tc in response.tool_calls]
+        else:
+            tool_calls = []
+            for tc in response.tool_calls:
+                try:
+                    parsed_args = json.loads(tc.function.arguments)
+                except (TypeError, ValueError) as _je:
+                    # 让 BaseHandler.dispatch 的 bad_json 路由把错误回灌给 LLM，而不是炸掉整轮。
+                    raw = (tc.function.arguments or '')
+                    snippet = raw[:120] + ('...' if len(raw) > 120 else '')
+                    tool_calls.append({'tool_name': 'bad_json',
+                                       'args': {'msg': f'tool_call arguments not valid JSON ({_je}); got: {snippet!r}'},
+                                       'id': tc.id})
+                    continue
+                tool_calls.append({'tool_name': tc.function.name,
+                                   'args': parsed_args if isinstance(parsed_args, dict) else {'_raw': parsed_args},
+                                   'id': tc.id})
        
         tool_results = []; next_prompts = set(); exit_reason = {}
         for ii, tc in enumerate(tool_calls):

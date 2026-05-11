@@ -14,10 +14,13 @@ Concurrency: one RLock guards the entire bus. Read snapshots use deque copy.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
 from collections import deque
+
+log = logging.getLogger(__name__)
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -161,8 +164,10 @@ class ForumBus:
             try:
                 cb(msg)
             except Exception:
-                # drop silently; subscribers are best-effort
-                pass
+                # subscribers are best-effort — never let a buggy one take
+                # down the bus, but DO surface the traceback once so it's
+                # debuggable rather than a silent void.
+                log.exception("forum subscriber %r on topic %r raised", name, topic)
         return msg
 
     def subscribe(self, topic: str, *, subscriber: str, callback: Callable[[ForumMessage], None]) -> None:

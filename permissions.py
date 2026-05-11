@@ -78,14 +78,43 @@ TOOL_METADATA = {
     # code_run because the called tool can do anything the server is
     # configured to allow. Default ASK.
     "mcp_call": ToolMetadata("Invoke MCP server tool", "high", PermissionDecision.ASK),
+    # wechat_send drives the WeChat desktop client via wxauto: irreversible
+    # outbound IM. Always ASK, never silently allow.
+    "wechat_send": ToolMetadata("Send WeChat message via wxauto", "high", PermissionDecision.ASK),
 }
 
 
 WRITE_TOOLS = {"file_patch", "file_write"}
 EXEC_TOOLS = {"code_run", "web_execute_js"}
 READ_ONLY_ALLOW = {"file_read", "ask_user", "update_working_checkpoint", "no_tool"}
+# Best-effort UX nudge — NOT a security boundary. The real defense is that
+# code_run is registered as `high` + ASK in TOOL_METADATA above; this regex
+# just upgrades the permission prompt's wording when an *obviously* dangerous
+# pattern slips through in non-interactive AUTO mode. It is trivially bypassed
+# (split flags, env-var indirection, $(...) subshells, base64-decoded scripts);
+# do NOT rely on it to block a determined adversarial LLM.
 DANGEROUS_COMMAND_RE = re.compile(
-    r"\b(rm\s+-rf|del\s+/[sq]|rmdir\s+/[sq]|format\b|shutdown\b|reboot\b|git\s+reset\s+--hard|git\s+push\s+--force)\b",
+    r"(?:"
+    # POSIX destructive
+    r"\brm\s+-[a-zA-Z]*[rRfF][a-zA-Z]*\b"           # rm -rf, rm -fr, rm -Rf, rm -r -f (loose)
+    r"|\bdd\s+(?:if|of)="                            # dd if=/dev/... of=/dev/...
+    r"|\bmkfs(?:\.[a-z0-9]+)?\b"                     # mkfs, mkfs.ext4
+    r"|\bchmod\s+-R\s+0?00\b"                        # chmod -R 000
+    r"|\bchown\s+-R\s+\S+\s+/\b"                     # chown -R user /
+    # Windows destructive
+    r"|\bdel\s+/[sqfSQF]"
+    r"|\brmdir\s+/[sqSQ]"
+    r"|\bformat\b|\bshutdown\b|\breboot\b"
+    # PowerShell destructive
+    r"|Remove-Item\b[^|]*-Recurse\b[^|]*-Force\b"
+    r"|Remove-Item\b[^|]*-Force\b[^|]*-Recurse\b"
+    # Git destructive
+    r"|\bgit\s+reset\s+--hard\b"
+    r"|\bgit\s+push\s+(?:[^|]*\s)?(?:-f\b|--force\b|--force-with-lease\b)"
+    r"|\bgit\s+clean\s+-[a-z]*[fF][a-z]*\b"
+    # Fork bomb (POSIX)
+    r"|:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:"
+    r")",
     re.IGNORECASE,
 )
 
