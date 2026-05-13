@@ -79,8 +79,12 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema, 
     ]
     turn = 0;  handler.max_turns = max_turns
     while turn < handler.max_turns:
-        turn += 1; md = '**' if verbose else ''
-        yield f"{md}LLM Running (Turn {turn}) ...{md}\n\n"
+        turn += 1
+        # Turn divider. verbose=True (GUI) gets a soft one-line marker;
+        # verbose=False (WeChat/DingTalk/etc.) keeps the literal banner their
+        # regexes already strip. Both contain 'LLM Running' so agentmain.py's
+        # flush trigger (`'LLM Running' in chunk`) still fires per turn.
+        yield (f"\nturn {turn} · LLM Running\n" if verbose else f"LLM Running (Turn {turn}) ...\n\n")
         if turn % TOOL_DESC_REFRESH_INTERVAL == 0: client.last_tools = ''  # 周期性重置工具描述
         response_gen = client.chat(messages=messages, tools=tools_schema)
         if verbose:
@@ -113,17 +117,23 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema, 
         for ii, tc in enumerate(tool_calls):
             tool_name, args, tid = tc['tool_name'], tc['args'], tc.get('id', '')
             if tool_name == 'no_tool': pass
-            else: 
-                if verbose: yield f"🛠️ Tool: `{tool_name}`  📥 args:\n````text\n{get_pretty_json(args)}\n````\n"
-                else: yield f"🛠️ {tool_name}({_compact_tool_args(tool_name, args)})\n\n\n"
+            else:
+                # Compact one-liner in both modes — the GUI renders plain text
+                # (not markdown), so the old verbose path's ```text``` fences
+                # + pretty-printed JSON args showed up as literal noise.
+                # Trailing newlines: chat frontends want 3 (legacy regex
+                # depends on the blank lines); GUI is fine with 1.
+                yield f"🛠️ {tool_name}({_compact_tool_args(tool_name, args)})" + ("\n" if verbose else "\n\n\n")
             handler.current_turn = turn
             gen = handler.dispatch(tool_name, args, response, index=ii)
             try:
                 v = next(gen)
                 def proxy(): yield v; return (yield from gen)
-                if verbose: yield '`````\n'
+                # No fence wraps around tool output: GUI renders plain text, so
+                # the old ````` fences were visible noise. Trailing \n keeps
+                # tool output separated from the next turn's marker.
                 outcome = (yield from proxy()) if verbose else exhaust(proxy())
-                if verbose: yield '`````\n'
+                if verbose: yield '\n'
             except StopIteration as e: outcome = e.value
             
             if outcome.should_exit: 
