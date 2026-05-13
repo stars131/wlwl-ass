@@ -81,6 +81,23 @@ TOOL_METADATA = {
     # wechat_send drives the WeChat desktop client via wxauto: irreversible
     # outbound IM. Always ASK, never silently allow.
     "wechat_send": ToolMetadata("Send WeChat message via wxauto", "high", PermissionDecision.ASK),
+    # gui_operator can move the mouse, type text, and click real UI controls.
+    # Observation is harmless, but the tool is classified by its most powerful
+    # action because permission prompts are per-tool today.
+    "gui_operator": ToolMetadata("Control desktop GUI", "high", PermissionDecision.ASK),
+    "browser_operator": ToolMetadata("Hybrid browser operator", "high", PermissionDecision.ASK),
+    # Free-pool family. forum_harvest reads the user's logged-in linux.do
+    # session; api_probe burns tokens on unknown endpoints; free_pool_ask
+    # sends user prompts to untrusted relays. All three are reversible but
+    # the user should see them firing.
+    "forum_harvest": ToolMetadata("Harvest free APIs from linux.do", "medium", PermissionDecision.ASK),
+    "api_probe": ToolMetadata("Probe a free-pool API endpoint", "medium", PermissionDecision.ASK),
+    "free_pool_ask": ToolMetadata("Ask an LLM through the free pool", "medium", PermissionDecision.ASK),
+    # pm_* tools sit on the self-evolution side. They only READ logs and
+    # write proposal markdown; they never modify code or SOPs directly. Low
+    # blast radius but still ASK so the user sees PM cycles run.
+    "pm_friction_scan": ToolMetadata("Mine friction signals for PM Track A", "low", PermissionDecision.ASK),
+    "pm_proposal_decide": ToolMetadata("Record a PM proposal decision", "low", PermissionDecision.ASK),
 }
 
 

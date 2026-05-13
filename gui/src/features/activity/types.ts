@@ -4,7 +4,14 @@
  */
 import { z } from 'zod';
 
-export const activityPhaseSchema = z.enum(['tool_start', 'tool_end', 'turn_end']);
+export const activityPhaseSchema = z.enum([
+  'task_start',
+  'task_end',
+  'tool_start',
+  'tool_end',
+  'turn_end',
+  'gui_step',
+]);
 export type ActivityPhase = z.infer<typeof activityPhaseSchema>;
 
 export const activityEventSchema = z
@@ -18,6 +25,12 @@ export const activityEventSchema = z
     elapsed_s: z.number().optional(),
     summary: z.string().optional(),
     exit_reason: z.record(z.unknown()).optional(),
+    status: z.string().optional(),
+    action: z.string().optional(),
+    target: z.string().optional(),
+    screenshot_path: z.string().optional(),
+    query_preview: z.string().optional(),
+    outcome: z.string().optional(),
   })
   .passthrough();
 export type ActivityEvent = z.infer<typeof activityEventSchema>;

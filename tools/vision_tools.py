@@ -126,8 +126,9 @@ def _record_usage_safe(resp_json: dict[str, Any], api_mode: str) -> None:
     try:
         from llmcore._usage import _record_usage
         usage = resp_json.get("usage") if isinstance(resp_json, dict) else None
+        model = resp_json.get("model") if isinstance(resp_json, dict) else ""
         if usage:
-            _record_usage(usage, api_mode)
+            _record_usage(usage, api_mode, source="vision", model=model or "")
     except Exception:
         pass
 

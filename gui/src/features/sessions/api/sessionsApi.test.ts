@@ -79,6 +79,21 @@ describe('sessionsApi', () => {
     expect(JSON.parse(fetchMock.mock.calls[0]![1].body as string)).toEqual({ llm_no: 3 });
   });
 
+  it('setProjectAutonomous patches the session flag', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ project: makeProject({ autonomous_enabled: true }) }),
+    );
+    globalThis.fetch = fetchMock;
+    const project = await api.setProjectAutonomous('p_x', true);
+
+    expect(project.autonomous_enabled).toBe(true);
+    expect(fetchMock.mock.calls[0]![0]).toBe('http://t.local/api/projects/p_x');
+    expect(fetchMock.mock.calls[0]![1].method).toBe('PATCH');
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body as string)).toEqual({
+      autonomous_enabled: true,
+    });
+  });
+
   it('rejects unparseable response', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ wrong: 'shape' }));
     await expect(api.listProjects()).rejects.toBeInstanceOf(ApiError);

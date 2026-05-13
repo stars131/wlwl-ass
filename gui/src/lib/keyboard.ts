@@ -1,7 +1,7 @@
 /**
  * Global keyboard shortcuts.
  *
- *   Cmd/Ctrl + 1..4   →  switch to tab N
+ *   Cmd/Ctrl + 1..7   →  switch to tab N
  *   Cmd/Ctrl + ,      →  jump to Settings tab
  *   Cmd/Ctrl + /      →  show shortcut help (alert; replace with proper
  *                        modal once we have one)
@@ -10,7 +10,14 @@
  */
 import { useEffect } from 'react';
 
-export type TabKey = 'sessions' | 'bots' | 'api-configs' | 'activity' | 'skills' | 'settings';
+export type TabKey =
+  | 'sessions'
+  | 'bots'
+  | 'api-configs'
+  | 'activity'
+  | 'skills'
+  | 'settings'
+  | 'gui-operator';
 
 const NUMBER_TO_TAB: Record<string, TabKey> = {
   '1': 'sessions',
@@ -19,6 +26,7 @@ const NUMBER_TO_TAB: Record<string, TabKey> = {
   '4': 'activity',
   '5': 'skills',
   '6': 'settings',
+  '7': 'gui-operator',
 };
 
 const HELP = `wlwl-ass 快捷键:
@@ -28,6 +36,7 @@ const HELP = `wlwl-ass 快捷键:
   Cmd/Ctrl + 4   活动
   Cmd/Ctrl + 5   技能
   Cmd/Ctrl + 6   设置
+  Cmd/Ctrl + 7   视觉操作
   Cmd/Ctrl + ,   设置 (别名)
   Cmd/Ctrl + /   显示本帮助
 `;

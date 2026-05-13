@@ -17,6 +17,7 @@ import {
   listProjects,
   pinProject,
   renameProject,
+  setProjectAutonomous,
   setProjectLlm,
   startProject,
   stopProject,
@@ -98,6 +99,17 @@ export function useRenameProject() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (vars: { id: string; name: string }) => renameProject(vars.id, vars.name),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: PROJECTS_KEY });
+    },
+  });
+}
+
+export function useSetProjectAutonomous() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { id: string; autonomousEnabled: boolean }) =>
+      setProjectAutonomous(vars.id, vars.autonomousEnabled),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: PROJECTS_KEY });
     },

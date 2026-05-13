@@ -25,6 +25,7 @@
       "sessions": "Sessions",
       "bots": "Bots",
       "apiConfigs": "API Configs",
+      "guiOperator": "GUI Operator",
       "activity": "Activity",
       "skills": "Skills",
       "settings": "Settings"

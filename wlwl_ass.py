@@ -9,6 +9,39 @@ ensure_safe_std_streams()
 from permissions import PermissionDecision, ToolPermissionRequest, tool_metadata
 from launcher import activity_log
 
+
+def _bool_arg(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def _harvest_extract_text(resp):
+    """``web_execute_js`` returns either a string (legacy) or a dict shaped
+    like ``{"result": ...}`` / ``{"data": ...}``. Normalise to plain text so
+    the forum harvester can feed it to ``json.loads`` without caring."""
+    if resp is None:
+        return ""
+    if isinstance(resp, str):
+        return resp
+    if isinstance(resp, dict):
+        for key in ("text", "result", "data", "value", "body"):
+            value = resp.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        # Some bridges return {"status": "success", "result": {"data": "..."}}
+        nested = resp.get("result")
+        if isinstance(nested, dict):
+            for key in ("data", "value", "body", "text"):
+                value = nested.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+    return ""
+
 def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop_signal=None):
     """代码执行器
     python: 运行复杂的 .py 脚本（文件模式）
@@ -730,6 +763,396 @@ class WlwlAssHandler(BaseHandler):
             yield f"[vision] extract {image_path!r}\n"
             return StepOutcome({"data": data}, next_prompt="\n")
         return StepOutcome({"error": f"unknown action {action!r}"}, next_prompt="\n")
+
+    def do_gui_operator(self, args, response):
+        '''Desktop GUI operator: observe / parse / act / run.'''
+        from tools import gui_operator
+        action = (args.get('action') or 'observe').strip()
+        if action == 'observe':
+            result = gui_operator.observe_desktop(
+                output_path=args.get('output_path'),
+                include_base64=_bool_arg(args.get('include_base64'), False),
+                all_screens=_bool_arg(args.get('all_screens'), False),
+            )
+            if result.get("status") == "success":
+                yield f"[gui_operator] screenshot -> {result.get('path')}\n"
+            else:
+                yield f"[gui_operator] observe error: {result.get('detail') or result.get('error')}\n"
+            return StepOutcome(result, next_prompt="\n")
+        if action == 'parse':
+            prediction = str(args.get('prediction') or args.get('action_text') or '')
+            if not prediction:
+                yield "[gui_operator] parse requires prediction/action_text\n"
+                return StepOutcome({"error": "missing_prediction"}, next_prompt="\n")
+            try:
+                screen_width = int(args.get('screen_width') or 1000)
+                screen_height = int(args.get('screen_height') or 1000)
+                scale_factor = float(args.get('scale_factor') or 1.0)
+                parsed = gui_operator.parse_actions(
+                    prediction,
+                    screen_width=screen_width,
+                    screen_height=screen_height,
+                    scale_factor=scale_factor,
+                )
+            except Exception as exc:
+                yield f"[gui_operator] parse error: {exc}\n"
+                return StepOutcome({"error": str(exc)}, next_prompt="\n")
+            data = [gui_operator.parsed_action_to_dict(p) for p in parsed]
+            yield f"[gui_operator] parsed {len(data)} action(s)\n"
+            return StepOutcome({"actions": data}, next_prompt="\n")
+        if action == 'act':
+            action_text = str(args.get('action_text') or '')
+            if not action_text:
+                yield "[gui_operator] act requires action_text\n"
+                return StepOutcome({"error": "missing_action_text"}, next_prompt="\n")
+            try:
+                result = gui_operator.execute_desktop_action(
+                    action_text,
+                    screen_width=args.get('screen_width'),
+                    screen_height=args.get('screen_height'),
+                    scale_factor=float(args.get('scale_factor') or 1.0),
+                    dry_run=_bool_arg(args.get('dry_run'), True),
+                )
+            except Exception as exc:
+                yield f"[gui_operator] act error: {exc}\n"
+                return StepOutcome({"error": str(exc)}, next_prompt="\n")
+            yield f"[gui_operator] {result.get('status')} {action_text}\n"
+            return StepOutcome(result, next_prompt="\n")
+        if action == 'run':
+            instruction = str(args.get('instruction') or args.get('task') or '').strip()
+            if not instruction:
+                yield "[gui_operator] run requires instruction\n"
+                return StepOutcome({"error": "missing_instruction"}, next_prompt="\n")
+            try:
+                result = gui_operator.run_visual_task(
+                    instruction,
+                    max_loop=int(args.get('max_loop') or 5),
+                    loop_wait=float(args.get('loop_wait') or 1.0),
+                    dry_run=_bool_arg(args.get('dry_run'), True),
+                    include_base64=_bool_arg(args.get('include_base64'), False),
+                    all_screens=_bool_arg(args.get('all_screens'), False),
+                    backend=str(args.get('backend') or 'auto'),
+                )
+            except Exception as exc:
+                yield f"[gui_operator] run error: {exc}\n"
+                return StepOutcome({"error": str(exc)}, next_prompt="\n")
+            yield f"[gui_operator] run {result.get('status')} steps={len(result.get('steps') or [])} dir={result.get('run_dir')}\n"
+            return StepOutcome(result, next_prompt="\n")
+        return StepOutcome({"error": f"unknown action {action!r}"}, next_prompt="\n")
+
+    def do_browser_operator(self, args, response):
+        '''Hybrid browser operator: DOM/JS first, visual fallback.'''
+        from tools import browser_hybrid_operator, gui_operator
+
+        instruction = str(args.get('instruction') or args.get('task') or '').strip()
+        if not instruction:
+            yield "[browser_operator] instruction is required\n"
+            return StepOutcome({"error": "missing_instruction"}, next_prompt="\n")
+        try:
+            result = browser_hybrid_operator.run_browser_task(
+                instruction,
+                scan_func=web_scan,
+                visual_run_func=gui_operator.run_visual_task,
+                force_visual=_bool_arg(args.get('force_visual'), False),
+                dry_run=_bool_arg(args.get('dry_run'), True),
+                max_loop=int(args.get('max_loop') or 5),
+                loop_wait=float(args.get('loop_wait') or 1.0),
+                backend=str(args.get('backend') or 'auto'),
+            )
+        except Exception as exc:
+            yield f"[browser_operator] error: {exc}\n"
+            return StepOutcome({"error": str(exc)}, next_prompt="\n")
+        yield f"[browser_operator] {result.get('strategy')} {result.get('status')}\n"
+        return StepOutcome(result, next_prompt="\n")
+
+    def do_forum_harvest(self, args, response):
+        '''Harvest free-API posts from the user's logged-in linux.do session.'''
+        import json as _json
+        from tools import forum_harvester
+        from launcher import free_pool_vault
+
+        max_topics = int(args.get('max_topics') or 20)
+        require_keywords = _bool_arg(args.get('require_keywords'), True)
+        auto_probe = _bool_arg(args.get('auto_probe'), False)
+
+        latest_script = (
+            "return fetch('/latest.json', {credentials: 'include'})"
+            ".then(r => r.text()).then(t => t);"
+        )
+        latest_resp = web_execute_js(latest_script)
+        latest_text = _harvest_extract_text(latest_resp)
+        if not latest_text:
+            yield "[forum_harvest] failed to fetch /latest.json (是否已登录 linux.do？)\n"
+            return StepOutcome({"error": "latest_fetch_failed"}, next_prompt="\n")
+        try:
+            latest_json = _json.loads(latest_text)
+        except _json.JSONDecodeError as exc:
+            yield f"[forum_harvest] /latest.json not JSON: {exc}\n"
+            return StepOutcome({"error": "latest_not_json"}, next_prompt="\n")
+
+        topic_ids = forum_harvester.select_topic_ids_from_latest(
+            latest_json, limit=max_topics, require_keywords=require_keywords,
+        )
+        yield f"[forum_harvest] picked {len(topic_ids)} topics from latest\n"
+
+        new_candidates: list[dict] = []
+        for tid in topic_ids:
+            script = (
+                f"return fetch('/t/{int(tid)}.json', {{credentials: 'include'}})"
+                ".then(r => r.text());"
+            )
+            topic_resp = web_execute_js(script)
+            topic_text = _harvest_extract_text(topic_resp)
+            if not topic_text:
+                continue
+            try:
+                topic_json = _json.loads(topic_text)
+            except _json.JSONDecodeError:
+                continue
+            cands = forum_harvester.extract_from_topic_json(topic_json)
+            for c in cands:
+                payload = c.to_dict()
+                free_pool_vault.append_candidate(payload)
+                try:
+                    entry = free_pool_vault.add_or_update(
+                        base_url=c.base_url,
+                        key=c.key,
+                        claimed_model=c.claimed_model,
+                        source=payload.get("source"),
+                    )
+                except ValueError:
+                    continue
+                if entry.get("status") == "candidate":
+                    new_candidates.append({"entry_id": entry["id"], **payload})
+
+        yield f"[forum_harvest] {len(new_candidates)} new candidates queued\n"
+
+        probe_results: list[dict] = []
+        if auto_probe and new_candidates:
+            from tools import api_probe
+            for cand in new_candidates[:max_topics]:
+                try:
+                    result = api_probe.probe_endpoint(
+                        base_url=cand["base_url"],
+                        key=cand["key"],
+                        claimed_model=cand.get("claimed_model") or "",
+                        source=cand.get("source"),
+                    )
+                except Exception as exc:
+                    yield f"[forum_harvest] probe error on {cand['entry_id']}: {exc}\n"
+                    continue
+                probe_results.append({
+                    "entry_id": result.entry_id,
+                    "ok": result.ok,
+                    "score": result.weighted_average,
+                    "guess": result.actual_model_guess,
+                    "matches": result.matches_claim,
+                })
+
+        return StepOutcome(
+            {
+                "topic_ids": topic_ids,
+                "new_candidates": new_candidates,
+                "probe_results": probe_results,
+            },
+            next_prompt="\n",
+        )
+
+    def do_api_probe(self, args, response):
+        '''Probe / sweep / archive entries in the free-pool vault.'''
+        from launcher import free_pool_vault
+        from tools import api_probe
+
+        action = (args.get('action') or 'list').strip()
+        if action == 'list':
+            entries = free_pool_vault.list_all()
+            yield f"[api_probe] vault has {len(entries)} entries\n"
+            return StepOutcome(
+                {"entries": [
+                    {
+                        "id": e.get("id"),
+                        "base_url": e.get("base_url"),
+                        "claimed_model": e.get("claimed_model"),
+                        "status": e.get("status"),
+                        "score": (e.get("fingerprint") or {}).get("weighted_average"),
+                        "actual_model_guess": (e.get("fingerprint") or {}).get("actual_model_guess"),
+                        "expires_at": e.get("expires_at"),
+                    } for e in entries
+                ]},
+                next_prompt="\n",
+            )
+        if action == 'sweep':
+            archived = free_pool_vault.sweep_expired()
+            yield f"[api_probe] swept {len(archived)} expired entries\n"
+            return StepOutcome({"archived": archived}, next_prompt="\n")
+        if action == 'archive':
+            entry_id = (args.get('entry_id') or '').strip()
+            reason = (args.get('reason') or 'manual').strip()
+            if not entry_id:
+                yield "[api_probe] archive requires entry_id\n"
+                return StepOutcome({"error": "missing_entry_id"}, next_prompt="\n")
+            ok = free_pool_vault.archive(entry_id, reason=reason)
+            yield f"[api_probe] archive {entry_id} -> {ok}\n"
+            return StepOutcome({"archived": ok, "entry_id": entry_id}, next_prompt="\n")
+        if action == 'probe_one':
+            base_url = (args.get('base_url') or '').strip()
+            key = (args.get('key') or '').strip()
+            claimed = (args.get('claimed_model') or '').strip()
+            if not base_url or not key:
+                yield "[api_probe] probe_one requires base_url + key\n"
+                return StepOutcome({"error": "missing_base_url_or_key"}, next_prompt="\n")
+            try:
+                result = api_probe.probe_endpoint(
+                    base_url=base_url, key=key, claimed_model=claimed,
+                )
+            except Exception as exc:
+                yield f"[api_probe] probe failed: {exc}\n"
+                return StepOutcome({"error": str(exc)}, next_prompt="\n")
+            yield (
+                f"[api_probe] {result.entry_id} ok={result.ok} "
+                f"score={result.weighted_average:.2f} guess={result.actual_model_guess} "
+                f"matches={result.matches_claim}\n"
+            )
+            return StepOutcome(result.__dict__, next_prompt="\n")
+        if action == 'probe_candidates':
+            limit = int(args.get('limit') or 20)
+            probed = []
+            for cand in free_pool_vault.iter_candidates():
+                if len(probed) >= limit:
+                    break
+                base_url = (cand.get('base_url') or '').strip()
+                key = (cand.get('key') or '').strip()
+                if not base_url or not key:
+                    continue
+                try:
+                    result = api_probe.probe_endpoint(
+                        base_url=base_url,
+                        key=key,
+                        claimed_model=cand.get('claimed_model') or '',
+                        source=cand.get('source'),
+                    )
+                except Exception as exc:
+                    yield f"[api_probe] {base_url} error: {exc}\n"
+                    continue
+                probed.append({
+                    "entry_id": result.entry_id,
+                    "ok": result.ok,
+                    "score": result.weighted_average,
+                    "guess": result.actual_model_guess,
+                })
+            yield f"[api_probe] probed {len(probed)} candidates\n"
+            return StepOutcome({"probed": probed}, next_prompt="\n")
+        return StepOutcome({"error": f"unknown action {action!r}"}, next_prompt="\n")
+
+    def do_free_pool_ask(self, args, response):
+        '''Single-turn LLM inference through the free pool, sensitivity-gated.'''
+        from launcher import free_pool_router
+
+        prompt = (args.get('prompt') or '').strip()
+        if not prompt:
+            yield "[free_pool_ask] prompt is required\n"
+            return StepOutcome({"error": "missing_prompt"}, next_prompt="\n")
+        sensitivity = (args.get('sensitivity') or 'public').strip().lower()
+        fallback_hint = _bool_arg(args.get('fallback_to_paid'), False)
+        try:
+            result = free_pool_router.ask(
+                prompt,
+                sensitivity=sensitivity,
+                max_attempts=int(args.get('max_attempts') or 3),
+                max_tokens=int(args.get('max_tokens') or 1024),
+                category_required=args.get('category_required') or None,
+                min_score=float(args.get('min_score') or 0.0),
+            )
+        except free_pool_router.SensitivityError as exc:
+            yield f"[free_pool_ask] sensitivity blocked: {exc}\n"
+            return StepOutcome({"error": "sensitivity_blocked", "detail": str(exc)}, next_prompt="\n")
+        if result["used"] == "free-pool":
+            yield (
+                f"[free_pool_ask] answered by {result['entry_id']} "
+                f"after {len(result['tried'])} attempt(s)\n"
+            )
+        elif result["error"] == "free_pool_exhausted_no_fallback" and fallback_hint:
+            # Translate the error so the agent SOP picks up the retry hint.
+            result = {**result, "error": "free_pool_exhausted_retry_with_main_llm"}
+            yield "[free_pool_ask] free pool exhausted; retry with main LLM\n"
+        else:
+            yield f"[free_pool_ask] no answer ({result.get('error', '')})\n"
+        return StepOutcome(result, next_prompt="\n")
+
+    def do_pm_friction_scan(self, args, response):
+        '''PM Track A: deterministic friction-signal scan over recent activity logs.'''
+        from tools import pm_friction_miner
+
+        days = int(args.get('days_window') or pm_friction_miner.DEFAULT_WINDOW_DAYS)
+        min_runs = int(args.get('min_distinct_runs') or pm_friction_miner.MIN_DISTINCT_RUNS)
+        force = _bool_arg(args.get('force'), False)
+
+        cadence = pm_friction_miner.check_cadence(track="A")
+        if not force and not cadence["allowed"]:
+            yield f"[pm_friction_scan] blocked by cadence: {cadence['reason']}\n"
+            return StepOutcome(
+                {"throttled": True, "cadence": cadence, "clusters": []},
+                next_prompt="\n",
+            )
+
+        result = pm_friction_miner.scan(
+            days_window=days,
+            min_distinct_runs=min_runs,
+        )
+        pm_friction_miner.mark_run(track="A")
+
+        next_id_hint = pm_friction_miner.next_proposal_id("A")
+        proposals_md = pm_friction_miner.proposals_path()
+        yield (
+            f"[pm_friction_scan] {result['signal_total']} signals "
+            f"→ {result['cluster_count_qualified']} qualified clusters "
+            f"(mode={cadence['mode']}, accept_rate={cadence['accept_rate']})\n"
+        )
+        return StepOutcome(
+            {
+                **result,
+                "cadence": cadence,
+                "next_proposal_id_hint": next_id_hint,
+                "proposals_path": str(proposals_md),
+                "guidance": (
+                    "现在请你自己读 clusters 做更智能的归因（≤5 个根因）。"
+                    "对每个幸存根因，按 pm_role_sop.md 的模板把提案 append 到 proposals_path。"
+                    "提案 id 从 next_proposal_id_hint 起递增。"
+                    "写完后用 pm_proposal_decide 不是这里的事——那是用户事后审完才打的决策。"
+                ) if cadence["mode"] == "normal" else (
+                    "当前是反思模式（accept_rate < 30%）。**不要**新增提案；"
+                    "请读 temp/pm_proposal_log.jsonl 中最近被 reject 的提案，"
+                    "总结 ≤3 个『歪掉的方向』写到 temp/pm_reflection_YYYYMMDD.md。"
+                ),
+            },
+            next_prompt="\n",
+        )
+
+    def do_pm_proposal_decide(self, args, response):
+        '''Record a decision on a PM proposal for accept-rate tracking.'''
+        from tools import pm_friction_miner
+
+        proposal_id = (args.get('proposal_id') or '').strip()
+        status = (args.get('status') or '').strip().lower()
+        decided_by = (args.get('decided_by') or 'user').strip()
+        track = (args.get('track') or 'A').strip()
+        if not proposal_id or not status:
+            yield "[pm_proposal_decide] proposal_id and status are required\n"
+            return StepOutcome({"error": "missing_field"}, next_prompt="\n")
+        try:
+            pm_friction_miner.record_decision(
+                proposal_id, status=status, decided_by=decided_by, track=track,
+            )
+        except ValueError as exc:
+            yield f"[pm_proposal_decide] invalid status: {exc}\n"
+            return StepOutcome({"error": "invalid_status"}, next_prompt="\n")
+        stats = pm_friction_miner.compute_accept_rate(track=track)
+        yield (
+            f"[pm_proposal_decide] {proposal_id} → {status}; "
+            f"accept_rate={stats['rate']} ({stats['accepted']}/"
+            f"{stats['accepted'] + stats['rejected']})\n"
+        )
+        return StepOutcome({"recorded": True, "stats": stats}, next_prompt="\n")
 
     def do_mixture_of_agents(self, args, response):
         '''Fan-out + aggregate over multiple model configs.'''

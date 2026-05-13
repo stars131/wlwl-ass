@@ -26,6 +26,7 @@ class _FakeRuntime:
         self.pid = 12345
         self._messages = []
         self.closed = False
+        self.autonomous_calls = []
 
     def is_alive(self):
         return not self.closed
@@ -54,6 +55,9 @@ class _FakeRuntime:
 
     def abort_current(self):
         pass
+
+    def set_autonomous(self, enabled, trigger_now=True):
+        self.autonomous_calls.append((enabled, trigger_now))
 
     def close(self, timeout=5):
         self.closed = True
@@ -200,6 +204,136 @@ def test_api_project_messages_passes_mode(monkeypatch):
 
         assert status == 202
         assert seen == [("run tests", "task")]
+    finally:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+
+
+def test_api_project_patch_updates_autonomous_runtime(monkeypatch):
+    from launcher import api_server, session_runtime
+    from launcher.project_manager import ProjectManager
+
+    tmp_path = _sandbox_tmp("native-api-autonomous")
+
+    def fake_start(self, project, resume_task_id=None):
+        runtime = _FakeRuntime(self.base_dir, project, resume_task_id)
+        self._runtimes[project["id"]] = runtime
+        return runtime
+
+    monkeypatch.setattr(api_server, "_project_root", lambda: tmp_path)
+    monkeypatch.setattr(api_server, "_project_manager", None)
+    monkeypatch.setattr(session_runtime.SessionRuntimeRegistry, "start", fake_start)
+
+    try:
+        pm = ProjectManager(tmp_path)
+        project = pm.create("demo", auto_start=False)
+        pm.start(project["id"])
+        runtime = pm.session(project["id"])
+        monkeypatch.setattr(api_server, "_project_manager", pm)
+
+        status, payload = api_server._route_project_patch({
+            "params": {"id": project["id"]},
+            "body": {"autonomous_enabled": True},
+        })
+
+        assert status == 200
+        assert payload["project"]["autonomous_enabled"] is True
+        assert runtime.autonomous_calls == [(True, True)]
+    finally:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+
+
+def _build_partial_autonomous_runtime(tmp_path, *, project_id="p_auto"):
+    """Build a SessionRuntime by bypassing __init__ and assigning only the
+    attributes that ``_maybe_start_autonomous_turn`` exercises.
+
+    Using __new__ here is intentional: the real __init__ spawns a subprocess
+    and a reader thread, which we don't want in unit tests. If a future
+    change to ``_maybe_start_autonomous_turn`` reads a new attribute, the
+    test will fail with AttributeError at the call site, surfacing the
+    missing dependency rather than silently passing. Add the attribute here
+    when that happens.
+    """
+    from launcher.session_runtime import SessionRuntime
+
+    class _FakeProc:
+        def poll(self):
+            return None
+
+    class _FakeLog:
+        def write(self, _text):
+            pass
+
+    runtime = SessionRuntime.__new__(SessionRuntime)
+    runtime.base_dir = tmp_path
+    runtime.project_id = project_id
+    runtime.lock = threading.RLock()
+    runtime.busy = False
+    runtime.closed = False
+    runtime.proc = _FakeProc()
+    runtime._message_seq = 0
+    runtime._current_assistant_id = None
+    runtime._partials = {}
+    runtime._assistant_modes = {}
+    runtime._autonomous_enabled = True
+    runtime._autonomous_interval_s = 60
+    runtime._autonomous_stop = threading.Event()
+    runtime._autonomous_thread = None
+    runtime._log_handle = _FakeLog()
+    runtime.history_path = os.path.join(tmp_path, "temp", "project_messages", f"{project_id}.json")
+    os.makedirs(os.path.dirname(runtime.history_path), exist_ok=True)
+    return runtime
+
+
+def test_session_runtime_autonomous_turn_sends_worker_command(monkeypatch):
+    from launcher.session_runtime import SessionRuntime
+
+    tmp_path = _sandbox_tmp("native-runtime-autonomous")
+    sent = []
+
+    def fake_send_command(self, payload):
+        sent.append(payload)
+
+    monkeypatch.setattr(SessionRuntime, "_send_command", fake_send_command)
+
+    try:
+        runtime = _build_partial_autonomous_runtime(tmp_path)
+
+        assert runtime._maybe_start_autonomous_turn("test") is True
+
+        messages = runtime.messages()
+        assert [m["role"] for m in messages] == ["system", "assistant"]
+        assert messages[1]["intent"]["intent"] == "autonomous"
+        assert sent[0]["source"] == "autonomous"
+        assert sent[0]["mode"] == "task_canvas"
+        assert runtime.busy is True
+    finally:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+
+
+def test_session_runtime_autonomous_turn_cleans_state_on_send_error(monkeypatch):
+    """_send_command failing must not leak _current_assistant_id / partials,
+    otherwise the next user message reuses stale state."""
+    from launcher.session_runtime import SessionRuntime
+
+    tmp_path = _sandbox_tmp("native-runtime-autonomous-error")
+
+    def boom(self, _payload):
+        raise RuntimeError("worker pipe broken")
+
+    monkeypatch.setattr(SessionRuntime, "_send_command", boom)
+
+    try:
+        runtime = _build_partial_autonomous_runtime(tmp_path)
+
+        try:
+            runtime._maybe_start_autonomous_turn("error-test")
+        except RuntimeError:
+            pass
+
+        assert runtime.busy is False
+        assert runtime._current_assistant_id is None
+        assert runtime._partials == {}
+        assert runtime._assistant_modes == {}
     finally:
         shutil.rmtree(tmp_path, ignore_errors=True)
 

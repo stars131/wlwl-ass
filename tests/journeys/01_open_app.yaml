@@ -1,0 +1,17 @@
+name: 01_open_app
+description: Load root URL, default Sessions tab visible, screenshot the empty shell.
+steps:
+  - action: goto
+    path: /
+    wait_until: domcontentloaded
+  - action: wait_for
+    selector: 'h1:has-text("wlwl-ass")'
+    timeout_ms: 10000
+  - action: wait_for
+    selector: 'button:has-text("Sessions"), button:has-text("会话")'
+    timeout_ms: 10000
+  - action: sleep
+    seconds: 0.5
+  - action: screenshot
+    name: shell_loaded
+    expected_change: ""

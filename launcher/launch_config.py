@@ -17,6 +17,7 @@ DEFAULT_OPTIONS = {
     "project_root": "",
     "use_project_context": True,
     "autonomous_enabled": False,
+    "autonomous_interval_s": 600,
 }
 
 PROJECT_OPTION_KEYS = (
@@ -25,8 +26,11 @@ PROJECT_OPTION_KEYS = (
     "project_root",
     "use_project_context",
     "autonomous_enabled",
+    "autonomous_interval_s",
 )
 PERMISSION_MODES = {"ask", "auto", "read-only", "dangerous"}
+AUTONOMOUS_INTERVAL_MIN_S = 60
+AUTONOMOUS_INTERVAL_MAX_S = 24 * 60 * 60
 
 
 def config_path(base_dir):
@@ -46,6 +50,13 @@ def normalize_options(options=None):
         out["llm_no"] = max(0, int(raw.get("llm_no", 0)))
     except (TypeError, ValueError):
         out["llm_no"] = 0
+    try:
+        interval = int(float(raw.get("autonomous_interval_s", DEFAULT_OPTIONS["autonomous_interval_s"])))
+    except (TypeError, ValueError):
+        interval = DEFAULT_OPTIONS["autonomous_interval_s"]
+    out["autonomous_interval_s"] = max(
+        AUTONOMOUS_INTERVAL_MIN_S, min(AUTONOMOUS_INTERVAL_MAX_S, interval)
+    )
     mode = str(raw.get("permission_mode") or DEFAULT_OPTIONS["permission_mode"]).strip()
     out["permission_mode"] = mode if mode in PERMISSION_MODES else DEFAULT_OPTIONS["permission_mode"]
     out["project_root"] = str(raw.get("project_root") or "").strip()

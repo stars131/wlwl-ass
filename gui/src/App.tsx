@@ -10,6 +10,7 @@ import { useKeyboardShortcuts, type TabKey } from '@/lib/keyboard';
 import { ApiConfigsPage } from './features/api-configs';
 import { ActivityPage } from './features/activity';
 import { BotsPage } from './features/bots';
+import { GuiOperatorPage } from './features/gui-operator';
 import { OnboardingModal } from './features/onboarding';
 import { SessionsPage } from './features/sessions';
 import { SettingsPage } from './features/settings';
@@ -24,6 +25,7 @@ const TAB_KEYS: { key: TabKey; tKey: string; hotkey: string }[] = [
   { key: 'activity', tKey: 'app.tabs.activity', hotkey: '⌘4' },
   { key: 'skills', tKey: 'app.tabs.skills', hotkey: '⌘5' },
   { key: 'settings', tKey: 'app.tabs.settings', hotkey: '⌘6' },
+  { key: 'gui-operator', tKey: 'app.tabs.guiOperator', hotkey: '⌘7' },
 ];
 
 /**
@@ -91,6 +93,7 @@ export function App(): JSX.Element {
         {tab === 'sessions' ? <SessionsPage /> : null}
         {tab === 'bots' ? <BotsPage /> : null}
         {tab === 'api-configs' ? <ApiConfigsPage /> : null}
+        {tab === 'gui-operator' ? <GuiOperatorPage /> : null}
         {tab === 'activity' ? <ActivityPage /> : null}
         {tab === 'skills' ? <SkillsPage /> : null}
         {tab === 'settings' ? <SettingsPage /> : null}

@@ -1,0 +1,16 @@
+name: 04_skills_tab
+description: Navigate to the Skills tab and capture its content (skills list).
+steps:
+  - action: goto
+    path: /
+    wait_until: domcontentloaded
+  - action: wait_for
+    selector: 'button:has-text("Skills"), button:has-text("技能")'
+    timeout_ms: 10000
+  - action: click
+    selector: 'button:has-text("Skills"), button:has-text("技能")'
+  - action: sleep
+    seconds: 0.8
+  - action: screenshot
+    name: skills_loaded
+    expected_change: "Skills 列表的内容可能随 skills 增减"

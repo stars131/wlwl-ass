@@ -50,6 +50,18 @@ TEXT_EXTS = {
     ".yml",
 }
 CANVAS_TEXT_LIMIT = 160_000
+AUTONOMOUS_INTERVAL_S = 10 * 60
+AUTONOMOUS_INTERVAL_MIN_S = 60
+AUTONOMOUS_INTERVAL_MAX_S = 24 * 60 * 60
+AUTONOMOUS_THREAD_JOIN_TIMEOUT_S = 2.0
+AUTONOMOUS_PROMPT = (
+    "Autonomous flow is enabled for this session. The user is away. "
+    "Read memory/autonomous_operation_sop.md and follow it. "
+    "Choose exactly one safe, bounded autonomous action for this run. "
+    "If there is no TODO, plan useful TODOs and stop. If there is a TODO, "
+    "execute one item, write the required report, update history/TODO via the SOP helper, "
+    "then stop. Do not wait for user input; record decisions needing approval in the report."
+)
 
 TASK_KEYWORDS = (
     "修复",
@@ -200,6 +212,28 @@ def _classify_intent(text: str, requested_mode: str = "auto") -> dict[str, Any]:
             "chat": has_chat,
         },
     }
+
+
+def _autonomous_intent() -> dict[str, Any]:
+    return {
+        "requested_mode": "task",
+        "mode": "task_canvas",
+        "intent": "autonomous",
+        "confidence": 1.0,
+        "signals": {
+            "task": True,
+            "canvas": True,
+            "chat": False,
+        },
+    }
+
+
+def _clamp_autonomous_interval(value: Any) -> int:
+    try:
+        seconds = int(float(value))
+    except (TypeError, ValueError):
+        seconds = AUTONOMOUS_INTERVAL_S
+    return max(AUTONOMOUS_INTERVAL_MIN_S, min(AUTONOMOUS_INTERVAL_MAX_S, seconds))
 
 
 def _make_task_steps(mode: str, phase: str = "running") -> list[dict[str, str]]:
@@ -374,6 +408,12 @@ class SessionRuntime:
         self._current_assistant_id: str | None = None
         self._partials: dict[str, str] = {}
         self._assistant_modes: dict[str, str] = {}
+        self._autonomous_enabled = bool(project.get("autonomous_enabled", False))
+        self._autonomous_interval_s = _clamp_autonomous_interval(
+            project.get("autonomous_interval_s", AUTONOMOUS_INTERVAL_S)
+        )
+        self._autonomous_stop = threading.Event()
+        self._autonomous_thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._start_error: str | None = None
         self._writer_lock = threading.Lock()
@@ -425,6 +465,8 @@ class SessionRuntime:
         self.state = "running"
         self._register_process(cmd)
         self._log(f"=== session subprocess ready pid={self.pid} ===")
+        if self._autonomous_enabled:
+            self.set_autonomous(True, trigger_now=True)
 
     def _register_process(self, cmd: list[str]) -> None:
         if not self.pid:
@@ -632,6 +674,110 @@ class SessionRuntime:
             self.proc.stdin.write(raw)
             self.proc.stdin.flush()
 
+    def _ensure_autonomous_thread(self) -> None:
+        with self.lock:
+            if self._autonomous_thread and self._autonomous_thread.is_alive():
+                return
+            stop_event = self._autonomous_stop
+            interval = self._autonomous_interval_s
+            self._autonomous_thread = threading.Thread(
+                target=self._autonomous_loop,
+                args=(stop_event, interval),
+                name=f"session-autonomous-{self.project_id}",
+                daemon=True,
+            )
+            self._autonomous_thread.start()
+
+    def _autonomous_loop(self, stop_event: threading.Event, interval_s: int) -> None:
+        # Each loop reads the interval it was started with; set_autonomous rotates
+        # the thread when the interval changes, so we don't need to re-read self.
+        while not stop_event.wait(interval_s):
+            self._maybe_start_autonomous_turn("interval")
+
+    def set_autonomous(
+        self,
+        enabled: bool,
+        *,
+        trigger_now: bool = True,
+        interval_s: Any = None,
+    ) -> None:
+        """Enable/disable the autonomous loop.
+
+        Always retires the previous loop thread (by rotating the stop event) and
+        joins it briefly outside the lock. This avoids the race where re-enabling
+        immediately after disabling would see the old thread still ``is_alive()``
+        and skip starting a new one, leaving the session without any worker.
+        """
+        enabled = bool(enabled)
+        join_target: threading.Thread | None = None
+        with self.lock:
+            if interval_s is not None:
+                self._autonomous_interval_s = _clamp_autonomous_interval(interval_s)
+            self._autonomous_enabled = enabled
+            previous_thread = self._autonomous_thread
+            previous_stop = self._autonomous_stop
+            previous_stop.set()
+            self._autonomous_stop = threading.Event()
+            self._autonomous_thread = None
+            if previous_thread is not None and previous_thread.is_alive():
+                join_target = previous_thread
+        if join_target is not None and join_target is not threading.current_thread():
+            join_target.join(timeout=AUTONOMOUS_THREAD_JOIN_TIMEOUT_S)
+        if enabled:
+            self._ensure_autonomous_thread()
+            if trigger_now:
+                self._maybe_start_autonomous_turn("enabled")
+
+    def _maybe_start_autonomous_turn(self, reason: str) -> bool:
+        if not self.is_alive():
+            return False
+        with self.lock:
+            if not self._autonomous_enabled or self.busy:
+                return False
+            self.busy = True
+        mode = "task_canvas"
+        intent = _autonomous_intent()
+        self._append_message(
+            "system",
+            f"Autonomous flow triggered ({reason}).",
+            extra={"requested_mode": "task"},
+        )
+        assistant_msg = self._append_message(
+            "assistant",
+            "",
+            status="running",
+            extra={
+                "mode": mode,
+                "intent": intent,
+                "task": {"steps": _make_task_steps(mode, "running")},
+                "artifacts": [],
+                "debug_content": "",
+            },
+        )
+        assistant_id = assistant_msg["id"]
+        with self.lock:
+            self._current_assistant_id = assistant_id
+            self._partials[assistant_id] = ""
+            self._assistant_modes[assistant_id] = mode
+        self._log(f"[autonomous] triggered ({reason})")
+        try:
+            self._send_command({
+                "cmd": "send",
+                "text": AUTONOMOUS_PROMPT,
+                "assistant_id": assistant_id,
+                "mode": mode,
+                "source": "autonomous",
+            })
+        except Exception:
+            with self.lock:
+                self.busy = False
+                self._current_assistant_id = None
+                self._partials.pop(assistant_id, None)
+                self._assistant_modes.pop(assistant_id, None)
+            self._update_message(assistant_id, content="Autonomous flow failed to start.", status="error")
+            raise
+        return True
+
     def is_alive(self) -> bool:
         return not self.closed and self.proc.poll() is None
 
@@ -679,6 +825,7 @@ class SessionRuntime:
             with self.lock:
                 self.busy = False
                 self._current_assistant_id = None
+                self._partials.pop(assistant_msg["id"], None)
                 self._assistant_modes.pop(assistant_msg["id"], None)
             self._update_message(assistant_msg["id"], content="发送失败。", status="error")
             raise
@@ -693,6 +840,7 @@ class SessionRuntime:
             return
         self.closed = True
         self.state = "stopping"
+        self._autonomous_stop.set()
         with contextlib.suppress(Exception):
             self._send_command({"cmd": "shutdown"})
         try:

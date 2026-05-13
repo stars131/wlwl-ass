@@ -1,0 +1,21 @@
+name: 05_keyboard_nav
+description: Use the Cmd+1 hotkey to return to Sessions after navigating away.
+steps:
+  - action: goto
+    path: /
+    wait_until: domcontentloaded
+  - action: wait_for
+    selector: 'button:has-text("Activity"), button:has-text("活动")'
+    timeout_ms: 10000
+  - action: click
+    selector: 'button:has-text("Activity"), button:has-text("活动")'
+  - action: wait_for
+    selector: 'button:has-text("导出 trajectory"), button:has-text("导出中")'
+    timeout_ms: 10000
+  - action: press
+    key: 'Control+1'
+  - action: sleep
+    seconds: 0.8
+  - action: screenshot
+    name: back_to_sessions
+    expected_change: ""

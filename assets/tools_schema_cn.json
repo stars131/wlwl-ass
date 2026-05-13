@@ -112,5 +112,91 @@
       "tool": {"type": "string", "description": "该 server 上的工具名。省略则列出该 server 的工具"},
       "arguments": {"type": "object", "description": "工具参数 — 按发现列表里 server 自报的 inputSchema 填"},
       "timeout": {"type": "number", "description": "单次调用超时秒数（默认 60）"}}}
-  }}
+  }},
+  {"type": "function", "function": {
+    "name": "gui_operator",
+    "description": "桌面 GUI 操作器（受 UI-TARS 启发）。observe 截屏到 temp/gui_runs；parse 把 UI-TARS 风格的 action 文本（例如 click(start_box='[x1,y1,x2,y2]')）解析成屏幕坐标；act 执行单个桌面动作；run 执行「截屏 → 视觉模型 → 动作」的小循环。默认 dry_run（只解析、不真动）。真实点击/键入不可撤销，需明确用户意图。",
+    "parameters": {"type": "object", "properties": {
+      "action": {"type": "string", "enum": ["observe", "parse", "act", "run"], "description": "执行的操作类型。", "default": "observe"},
+      "output_path": {"type": "string", "description": "observe 的截图输出路径（可选，仅允许写到 temp/gui_runs/ 下）。"},
+      "include_base64": {"type": "boolean", "description": "observe：是否在返回中携带截图 base64。一般不开启，让调用方用返回的路径接 vision。"},
+      "all_screens": {"type": "boolean", "description": "observe：尽可能抓取多显示器。坐标动作建议保持单屏。"},
+      "instruction": {"type": "string", "description": "run：交给视觉模型的自然语言桌面任务描述。"},
+      "prediction": {"type": "string", "description": "parse：原始 VLM 输出，可包含一个或多个 Action 行。"},
+      "action_text": {"type": "string", "description": "parse/act：单个动作调用，例如 click(start_box='[100,200,120,220]') 或 hotkey(key='ctrl+l')。"},
+      "screen_width": {"type": "integer", "description": "坐标换算使用的逻辑屏宽。直接 parse 非 observe 数据时必填。"},
+      "screen_height": {"type": "integer", "description": "坐标换算使用的逻辑屏高。直接 parse 非 observe 数据时必填。"},
+      "scale_factor": {"type": "number", "description": "来自 observe 的 DPI 缩放因子；默认 1.0。", "default": 1},
+      "max_loop": {"type": "integer", "description": "run：observe/VLM/动作循环的最大迭代次数（服务端硬上限 50）。", "default": 5},
+      "loop_wait": {"type": "number", "description": "run：真实动作之间的等待秒数（服务端硬上限 30s）。", "default": 1},
+      "backend": {"type": "string", "description": "run：视觉后端，与 vision_tools 一致（`auto`、`claude`、`openai`）。", "default": "auto"},
+      "dry_run": {"type": "boolean", "description": "act：只解析并返回坐标，不真正移动鼠标/键盘。", "default": true}},
+      "required": ["action"]}}
+  },
+  {"type": "function", "function": {
+    "name": "browser_operator",
+    "description": "混合浏览器操作器：默认走 DOM/文本扫描并提示改用 web_execute_js；当强制视觉或 DOM 不可用（canvas、远程桌面、验证码、文本过稀）时切换到视觉版 gui_operator。默认 dry_run。",
+    "parameters": {"type": "object", "properties": {
+      "instruction": {"type": "string", "description": "需要执行或规划的浏览器任务。"},
+      "force_visual": {"type": "boolean", "description": "跳过 DOM 策略，直接进入视觉操作。", "default": false},
+      "dry_run": {"type": "boolean", "description": "视觉兜底：只解析/规划，不真正移动鼠标/键盘。", "default": true},
+      "max_loop": {"type": "integer", "description": "视觉兜底：observe/VLM/动作循环的最大迭代次数（服务端硬上限 50）。", "default": 5},
+      "loop_wait": {"type": "number", "description": "视觉兜底：真实动作之间的等待秒数（服务端硬上限 30s）。", "default": 1},
+      "backend": {"type": "string", "description": "视觉兜底使用的视觉后端（`auto`、`claude`、`openai`）。", "default": "auto"}},
+      "required": ["instruction"]}}
+  },
+  {"type": "function", "function": {
+    "name": "forum_harvest",
+    "description": "通过你当前已登录的 linux.do session 抓取 Discourse JSON（latest.json + /t/<id>.json），从帖子里提取 (base_url, key, model) 三元组写入候选队列。本工具只抓取不调用 API，配合 api_probe 才会真正验证。复用现有 tmwd_cdp_bridge，登录态/2FA/Cloudflare cookies 都留在你的真实浏览器里。",
+    "parameters": {"type": "object", "properties": {
+      "max_topics": {"type": "integer", "description": "单次抓取的主题数上限（默认 20）。每个主题一次 /t/<id>.json 请求。", "default": 20},
+      "require_keywords": {"type": "boolean", "description": "是否只扫描标题/标签含 API 相关关键词的主题（默认 true）。设 false 扫全部。", "default": true},
+      "auto_probe": {"type": "boolean", "description": "抓取完成后是否立即对每个新候选执行 probe。默认关——probe 有独立权限提示。", "default": false}},
+      "required": []}}
+  },
+  {"type": "function", "function": {
+    "name": "api_probe",
+    "description": "通过指纹题库验证 free-pool 中的 API endpoint，把得分/延迟/actual_model_guess/supported_models 写回 vault。action：`probe_one`（验证指定 url+key）/`probe_candidates`（把候选队列里的全部 probe 一遍）/`sweep`（推进失活+归档）/`list`（打印 vault 摘要）/`archive`（手动驱逐一条 entry）。",
+    "parameters": {"type": "object", "properties": {
+      "action": {"type": "string", "enum": ["probe_one", "probe_candidates", "sweep", "list", "archive"], "description": "操作类型。", "default": "list"},
+      "base_url": {"type": "string", "description": "probe_one：API base URL，以 /v1 或 /api/v1 结尾。"},
+      "key": {"type": "string", "description": "probe_one：endpoint 的 bearer key（sk-...）。"},
+      "claimed_model": {"type": "string", "description": "probe_one：发帖人声称的模型 id，用作候选的 claimed_model。"},
+      "entry_id": {"type": "string", "description": "archive：要驱逐的 vault entry id。"},
+      "reason": {"type": "string", "description": "archive：驱逐原因（记入 archive 日志）。"},
+      "limit": {"type": "integer", "description": "probe_candidates：本次最多 probe 多少个候选。", "default": 20}},
+      "required": ["action"]}}
+  },
+  {"type": "function", "function": {
+    "name": "free_pool_ask",
+    "description": "通过 free pool 跑一次单轮 LLM 推理。强制 sensitivity gate：只有 public 走 free pool；internal/private 被拒绝或路由到别处。返回回答+服务的 entry id。free pool 耗尽时根据 fallback_to_paid 返回 `free_pool_exhausted_no_fallback` 或 `free_pool_exhausted_retry_with_main_llm`，后者提示调用方不通过本工具直接再问一次主 LLM。",
+    "parameters": {"type": "object", "properties": {
+      "prompt": {"type": "string", "description": "提问内容，必填。"},
+      "sensitivity": {"type": "string", "enum": ["public", "internal", "private"], "description": "隐私等级。autonomous 自选任务**只能**用 public。", "default": "public"},
+      "fallback_to_paid": {"type": "boolean", "description": "提示调用方：free pool 耗尽时是否使用主 LLM 重试（本工具自己不切后端）。", "default": false},
+      "max_attempts": {"type": "integer", "description": "在 free pool 中最多尝试多少个 entry 才放弃。", "default": 3},
+      "max_tokens": {"type": "integer", "description": "底层 chat completion 的 max_tokens。", "default": 1024},
+      "category_required": {"type": "string", "description": "仅使用在该类别（如 `code`、`long_context`）上得分≥0.7 的 entry。"},
+      "min_score": {"type": "number", "description": "entry 的 weighted_average 下界。", "default": 0.0}},
+      "required": ["prompt"]}}
+  },
+  {"type": "function", "function": {
+    "name": "pm_friction_scan",
+    "description": "PM 角色 Track A：扫描近期 activity 日志找摩擦信号（重试爆发 / 错误后重试 / 超长 turn / 异常退出），按 (signal_type, tool) 预聚类，强制 ≥3 个不同 run 的 provenance 门槛后返回结构化 JSON。**本工具自己不调用 LLM、不写提案**——agent 在自己的回合内读返回的 clusters 再做更智能的聚类，并通过 file_patch/file_write 把幸存提案写到 temp/pm_proposals.md。返回前会先检查节奏/接受率节流。",
+    "parameters": {"type": "object", "properties": {
+      "days_window": {"type": "integer", "description": "回看最近多少天的 activity 日志。", "default": 7},
+      "min_distinct_runs": {"type": "integer", "description": "Provenance 门槛：少于 N 个独立 run 支持的 cluster 一律丢弃。", "default": 3},
+      "force": {"type": "boolean", "description": "跳过 cadence/throttle 检查（仅用户显式要求时使用）。", "default": false}},
+      "required": []}}
+  },
+  {"type": "function", "function": {
+    "name": "pm_proposal_decide",
+    "description": "对一条 PM 提案打决策，把状态写入接受率追踪日志。status='accepted'（用户采纳，后续转为 TODO）、'rejected'（不值得做）、'deferred'（暂缓决定，不影响接受率）。",
+    "parameters": {"type": "object", "properties": {
+      "proposal_id": {"type": "string", "description": "来自 temp/pm_proposals.md 的提案 id，如 PM-A-0003。"},
+      "status": {"type": "string", "enum": ["accepted", "rejected", "deferred"], "description": "决策结果。"},
+      "decided_by": {"type": "string", "description": "决策者（自由文本，默认 'user'）。", "default": "user"},
+      "track": {"type": "string", "description": "PM 轨道（A/B/C）。", "default": "A"}},
+      "required": ["proposal_id", "status"]}}
+  }
 ]

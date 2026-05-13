@@ -146,6 +146,92 @@
       "required": ["action", "image_path"]}}
   },
   {"type": "function", "function": {
+    "name": "gui_operator",
+    "description": "Desktop GUI operator inspired by UI-TARS. Actions: (1) `observe` captures the current desktop screenshot to temp/gui_runs and returns path/size/scale; (2) `parse` parses UI-TARS-style action text such as click(start_box='[x1,y1,x2,y2]') into coordinates; (3) `act` executes one parsed desktop action; (4) `run` performs a small screenshot -> configured vision/VLM -> action loop. Defaults to dry_run for safety. Real clicks/typing are irreversible and require explicit user intent.",
+    "parameters": {"type": "object", "properties": {
+      "action": {"type": "string", "enum": ["observe", "parse", "act", "run"], "description": "Operation.", "default": "observe"},
+      "output_path": {"type": "string", "description": "Optional screenshot output path for observe. Defaults to temp/gui_runs/YYYYMMDD/."},
+      "include_base64": {"type": "boolean", "description": "For observe: include screenshot base64 in the result. Usually false; use the returned path with vision instead."},
+      "all_screens": {"type": "boolean", "description": "For observe: capture all monitors when supported. Single-monitor is safer for coordinate actions."},
+      "instruction": {"type": "string", "description": "For run: natural-language desktop task given to the vision model."},
+      "prediction": {"type": "string", "description": "For parse: raw VLM output containing one or more Action lines."},
+      "action_text": {"type": "string", "description": "For parse/act: one action call, e.g. click(start_box='[100,200,120,220]') or hotkey(key='ctrl+l')."},
+      "screen_width": {"type": "integer", "description": "Logical screen width used for coordinate conversion. Required for parse on non-observe data."},
+      "screen_height": {"type": "integer", "description": "Logical screen height used for coordinate conversion. Required for parse on non-observe data."},
+      "scale_factor": {"type": "number", "description": "DPI scale factor from observe; defaults to 1.0."},
+      "max_loop": {"type": "integer", "description": "For run: maximum observe/VLM/action iterations.", "default": 5},
+      "loop_wait": {"type": "number", "description": "For run: seconds to wait between real actions.", "default": 1},
+      "backend": {"type": "string", "description": "For run: vision backend, same values as vision_tools (`auto`, `claude`, `openai`).", "default": "auto"},
+      "dry_run": {"type": "boolean", "description": "For act: parse and return coordinates without moving mouse/keyboard.", "default": true}},
+      "required": ["action"]}}
+  },
+  {"type": "function", "function": {
+    "name": "browser_operator",
+    "description": "Hybrid browser operator. Defaults to DOM/text scan and instructs use of web_execute_js when the page is structured; switches to visual gui_operator when forced or when DOM is unusable (canvas, remote desktop, captcha, sparse text). Safe default is dry_run.",
+    "parameters": {"type": "object", "properties": {
+      "instruction": {"type": "string", "description": "Browser task to perform or plan."},
+      "force_visual": {"type": "boolean", "description": "Skip DOM strategy and use visual browser operation immediately.", "default": false},
+      "dry_run": {"type": "boolean", "description": "For visual fallback: parse/plan without moving mouse/keyboard.", "default": true},
+      "max_loop": {"type": "integer", "description": "For visual fallback: maximum observe/VLM/action iterations.", "default": 5},
+      "loop_wait": {"type": "number", "description": "For visual fallback: seconds between real actions.", "default": 1},
+      "backend": {"type": "string", "description": "Vision backend for visual fallback (`auto`, `claude`, `openai`).", "default": "auto"}},
+      "required": ["instruction"]}}
+  },
+  {"type": "function", "function": {
+    "name": "forum_harvest",
+    "description": "Crawl the user's logged-in linux.do session for free-API posts via Discourse JSON (latest.json + /t/<id>.json). Extracts (base_url, key, model) triples and writes them to the candidate queue. Does not call the harvested APIs — pair with api_probe to actually validate. The harvester reuses the existing tmwd_cdp_bridge so all login state / 2FA / Cloudflare cookies stay in the user's real browser.",
+    "parameters": {"type": "object", "properties": {
+      "max_topics": {"type": "integer", "description": "Cap on topics fetched per run (default 20). Each topic is one /t/<id>.json fetch.", "default": 20},
+      "require_keywords": {"type": "boolean", "description": "Only scan topics whose title/tags hint at API content (default true). Set false to scan everything.", "default": true},
+      "auto_probe": {"type": "boolean", "description": "Immediately probe each new candidate after harvesting. Off by default — probing is its own permission prompt.", "default": false}},
+      "required": []}}
+  },
+  {"type": "function", "function": {
+    "name": "api_probe",
+    "description": "Validate a free-pool API endpoint by running the fingerprint question bank. Writes results (scores, latency, actual_model_guess, supported_models) back to the vault. Use action=`probe_one` for an ad-hoc URL/key, `probe_candidates` to drain the candidate queue into the vault, `sweep` to expire+archive stale entries, or `list` to dump the current vault.",
+    "parameters": {"type": "object", "properties": {
+      "action": {"type": "string", "enum": ["probe_one", "probe_candidates", "sweep", "list", "archive"], "description": "Operation.", "default": "list"},
+      "base_url": {"type": "string", "description": "probe_one: API base URL ending in /v1 or /api/v1."},
+      "key": {"type": "string", "description": "probe_one: bearer key for the endpoint (sk-...)."},
+      "claimed_model": {"type": "string", "description": "probe_one: model id the poster claimed (used as the candidate's claimed_model)."},
+      "entry_id": {"type": "string", "description": "archive: which vault entry id to evict."},
+      "reason": {"type": "string", "description": "archive: why (recorded into the archive log)."},
+      "limit": {"type": "integer", "description": "probe_candidates: cap on candidates probed this run.", "default": 20}},
+      "required": ["action"]}}
+  },
+  {"type": "function", "function": {
+    "name": "free_pool_ask",
+    "description": "Single-turn LLM inference through the free pool. Respects the sensitivity gate: only public prompts touch the pool; internal/private are refused or routed elsewhere. Returns the answer plus which entry served it. If the pool is exhausted, returns error=`free_pool_exhausted_no_fallback` (when fallback_to_paid is false) or `free_pool_exhausted_retry_with_main_llm` (when true) — in the second case the caller should re-ask without this tool.",
+    "parameters": {"type": "object", "properties": {
+      "prompt": {"type": "string", "description": "Prompt text. Required."},
+      "sensitivity": {"type": "string", "enum": ["public", "internal", "private"], "description": "Privacy classification. autonomous self-selected tasks must use `public`.", "default": "public"},
+      "fallback_to_paid": {"type": "boolean", "description": "Hint to the caller: when free pool exhausts, retry with the main LLM (the tool itself doesn't switch backends).", "default": false},
+      "max_attempts": {"type": "integer", "description": "Max free-pool entries to try before giving up.", "default": 3},
+      "max_tokens": {"type": "integer", "description": "max_tokens for the underlying chat completion.", "default": 1024},
+      "category_required": {"type": "string", "description": "Only use entries that scored ≥0.7 on this category tag (e.g. `code`, `long_context`)."},
+      "min_score": {"type": "number", "description": "Lower bound on entry's weighted_average to be considered.", "default": 0.0}},
+      "required": ["prompt"]}}
+  },
+  {"type": "function", "function": {
+    "name": "pm_friction_scan",
+    "description": "PM Track A: scan recent activity logs for friction signals (retry bursts, error-retry pairs, long turns, bad exits), cluster by (signal_type, tool), apply the ≥3 distinct runs provenance gate, and return structured JSON. The tool DOES NOT call an LLM and DOES NOT write proposals — the agent reasons about the returned clusters in its own turn and writes proposals to temp/pm_proposals.md via file_patch/file_write. Also checks the cadence/accept-rate throttle before returning data.",
+    "parameters": {"type": "object", "properties": {
+      "days_window": {"type": "integer", "description": "Look back N days of activity logs.", "default": 7},
+      "min_distinct_runs": {"type": "integer", "description": "Provenance gate: drop clusters supported by fewer than N distinct runs.", "default": 3},
+      "force": {"type": "boolean", "description": "Bypass the cadence/throttle check (use only when the user explicitly asks for an ad-hoc scan).", "default": false}},
+      "required": []}}
+  },
+  {"type": "function", "function": {
+    "name": "pm_proposal_decide",
+    "description": "Record a decision on a PM proposal so the accept-rate tracker updates. Use status='accepted' when the user approves a proposal (it then becomes a TODO/work item), 'rejected' to mark it as not worth doing, or 'deferred' to push the decision later. Deferred decisions do not affect the accept rate.",
+    "parameters": {"type": "object", "properties": {
+      "proposal_id": {"type": "string", "description": "ID from temp/pm_proposals.md, e.g. PM-A-0003."},
+      "status": {"type": "string", "enum": ["accepted", "rejected", "deferred"], "description": "Decision outcome."},
+      "decided_by": {"type": "string", "description": "Who decided (free text, default 'user').", "default": "user"},
+      "track": {"type": "string", "description": "Which PM track (A/B/C).", "default": "A"}},
+      "required": ["proposal_id", "status"]}}
+  },
+  {"type": "function", "function": {
     "name": "mixture_of_agents",
     "description": "Fan a single prompt out to N model configs in parallel, then synthesise via an aggregator. Different from `MixinSession` (failover) — this runs every member and combines. Use when quality matters more than latency, or to get a multi-model second-opinion. Member names refer to entries in api_configs. Returns the aggregated answer plus per-member outputs and timings. Defaults the aggregator to the first member if not specified.",
     "parameters": {"type": "object", "properties": {

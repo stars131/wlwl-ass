@@ -4,6 +4,10 @@ tmp/
 .deps/
 .pip-cache/
 pytest-cache-files-*/
+.pytest-tmp/
+
+# Journey runner per-run output (baselines/ is committed; runs/ is ephemeral)
+tests/journeys/runs/
 
 # GUI (Tauri + React) build artefacts
 gui/node_modules/

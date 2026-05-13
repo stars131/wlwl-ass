@@ -82,11 +82,11 @@ class Worker:
         self.thread = threading.Thread(target=self.agent.run, name="session-worker-agent", daemon=True)
         self.thread.start()
 
-    def send(self, text: str, assistant_id: str, mode: str = "chat") -> None:
+    def send(self, text: str, assistant_id: str, mode: str = "chat", source: str = "gui") -> None:
         self.current_cancel = threading.Event()
         self.current_assistant_id = assistant_id
         instruction = MODE_INSTRUCTIONS.get(mode, MODE_INSTRUCTIONS["chat"])
-        task_queue = self.agent.put_task(f"{FILE_HINT}\n{instruction}\n\n{text}", source="gui")
+        task_queue = self.agent.put_task(f"{FILE_HINT}\n{instruction}\n\n{text}", source=source)
         threading.Thread(
             target=self._drain_task,
             args=(task_queue, assistant_id, self.current_cancel),
@@ -153,10 +153,11 @@ def main(argv: list[str] | None = None) -> int:
             text = str(msg.get("text") or "").strip()
             assistant_id = str(msg.get("assistant_id") or "")
             mode = str(msg.get("mode") or "chat")
+            source = str(msg.get("source") or "gui")
             if not text or not assistant_id:
                 _emit({"event": "error", "assistant_id": assistant_id, "detail": "text and assistant_id are required"})
                 continue
-            worker.send(text, assistant_id, mode)
+            worker.send(text, assistant_id, mode, source)
         elif cmd == "abort":
             worker.abort()
         elif cmd == "shutdown":

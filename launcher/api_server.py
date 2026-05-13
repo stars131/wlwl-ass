@@ -48,6 +48,32 @@ READY_MARKER = "__GA_READY__"
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+# Origins the desktop GUI legitimately uses. Anything else is refused CORS
+# unless WLWL_API_AUTH_TOKEN is set (in which case the bearer gate vets it).
+# tauri.localhost / tauri://localhost cover Tauri WebView2 / WRY on Windows
+# and Linux; localhost:<port> covers ``vite dev`` and a few embedded tools.
+_ALLOWED_ORIGIN_HOSTS = {
+    "localhost", "127.0.0.1", "tauri.localhost",
+}
+
+
+def _origin_allowed(origin: str) -> bool:
+    """Strict allow-list. Accepts ``tauri://localhost``, ``http(s)://localhost[:port]``,
+    ``http(s)://127.0.0.1[:port]``, ``http://tauri.localhost``. Refuses
+    ``null`` (file://), public domains, and anything malformed."""
+    if not origin or origin == "null":
+        return False
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https", "tauri"):
+        return False
+    host = (parsed.hostname or "").lower()
+    return host in _ALLOWED_ORIGIN_HOSTS
+
+
 _started_at = time.monotonic()
 _project_manager = None  # lazy ProjectManager instance
 _bot_manager = None  # lazy BotManager instance
@@ -273,10 +299,16 @@ def _route_project_pin(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 def _route_project_patch(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     pid = req["params"]["id"]
     body = req["body"]
+    if not isinstance(body, dict):
+        return 400, {"error": "invalid_body"}
     if "name" in body:
         ok = _pm().rename(pid, str(body["name"] or ""))
         if not ok:
             return 400, {"error": "rename_failed"}
+    if "autonomous_enabled" in body:
+        project = _pm().set_autonomous(pid, bool(body["autonomous_enabled"]))
+        if project is None:
+            return 404, {"error": "not_found", "id": pid}
     return 200, {"project": _pm().get(pid)}
 
 
@@ -463,15 +495,23 @@ def _read_credentials() -> dict[str, Any]:
     return out
 
 
+# Field-name fragments that mark a value as sensitive enough to mask in
+# GET /api/credentials. ``app_id`` / ``client_id`` / ``bot_id`` are
+# semi-public but still identify the bot tenant — masking on read +
+# preserving via the ``***`` round-trip keeps them out of casual screen
+# captures. ``allowed_users`` is a plain list and stays visible.
+_BOT_CRED_MASKED_FRAGMENTS = ("secret", "token", "app_id", "client_id", "bot_id")
+
+
 def _route_credentials_get(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """GET /api/credentials → {fields: {bot:[..]}, values: {bot:{field:val}}}"""
     creds = _read_credentials()
     grouped: dict[str, dict[str, Any]] = {}
     for bot, fields in _BOT_CRED_FIELDS.items():
         grouped[bot] = {f: creds.get(f, "") for f in fields}
-        # Mask secrets but leave list-valued fields intact for round-trip.
+        # Mask secrets + tenant ids but leave list-valued fields intact for round-trip.
         for f in fields:
-            if any(token in f for token in ("secret", "token")) and grouped[bot][f]:
+            if any(frag in f for frag in _BOT_CRED_MASKED_FRAGMENTS) and grouped[bot][f]:
                 grouped[bot][f] = "***"
     return 200, {"fields": _BOT_CRED_FIELDS, "values": grouped}
 
@@ -732,8 +772,10 @@ def _route_llm_test(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             from llmcore._usage import _record_usage
             data = resp.json()
             usage = data.get("usage") if isinstance(data, dict) else None
+            model = data.get("model") if isinstance(data, dict) else ""
             if usage:
-                _record_usage(usage, "messages" if is_claude else "chat_completions")
+                _record_usage(usage, "messages" if is_claude else "chat_completions",
+                              source="llm_test", model=model or "")
         except Exception:
             pass
     return 200, {
@@ -812,6 +854,123 @@ def _route_token_usage_reset(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]
 
     _llm.reset_token_usage()
     return 200, _llm.get_token_usage()
+
+
+COST_ANOMALY_SINGLE_ROW_USD = 1.0
+COST_ANOMALY_DAY_USD = 20.0
+
+
+def _route_cost_summary(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """Aggregate temp/cost_ledger.jsonl into today/month/top-N + anomalies.
+
+    Anomalies surface two signals: any single ledger row above
+    COST_ANOMALY_SINGLE_ROW_USD (probably a runaway tool turn), and any
+    rolling 24h window above COST_ANOMALY_DAY_USD (sustained burn). Both
+    thresholds are intentionally generous — the goal is "did something go
+    wrong" not "are we over budget"."""
+    import os as _os
+    import json as _json
+    import datetime as _dt
+    from collections import defaultdict
+
+    ledger = _os.path.join(_project_root(), "temp", "cost_ledger.jsonl")
+    today_usd = 0.0
+    month_usd = 0.0
+    total_usd = 0.0
+    by_model: dict[str, float] = defaultdict(float)
+    by_source: dict[str, float] = defaultdict(float)
+    anomalies: list[dict[str, Any]] = []
+    row_count = 0
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    today_iso = now.strftime("%Y-%m-%d")
+    month_prefix = now.strftime("%Y-%m")
+    day_window_start = now - _dt.timedelta(hours=24)
+    rolling_24h_usd = 0.0
+
+    if not _os.path.exists(ledger):
+        return 200, {
+            "today_usd": 0.0,
+            "month_usd": 0.0,
+            "total_usd": 0.0,
+            "rolling_24h_usd": 0.0,
+            "row_count": 0,
+            "top_models": [],
+            "top_sources": [],
+            "anomalies": [],
+            "thresholds": {
+                "single_row_usd": COST_ANOMALY_SINGLE_ROW_USD,
+                "day_usd": COST_ANOMALY_DAY_USD,
+            },
+        }
+
+    try:
+        with open(ledger, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = _json.loads(line)
+                except Exception:
+                    continue
+                cost = float(row.get("cost_usd") or 0.0)
+                ts = str(row.get("ts") or "")
+                model = str(row.get("model") or "(unknown)")
+                source = str(row.get("source") or "agent")
+                total_usd += cost
+                by_model[model] += cost
+                by_source[source] += cost
+                row_count += 1
+                if ts.startswith(today_iso):
+                    today_usd += cost
+                if ts.startswith(month_prefix):
+                    month_usd += cost
+                # Rolling 24h window
+                try:
+                    row_dt = _dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    if row_dt >= day_window_start:
+                        rolling_24h_usd += cost
+                except Exception:
+                    pass
+                if cost > COST_ANOMALY_SINGLE_ROW_USD:
+                    anomalies.append({
+                        "kind": "single_row",
+                        "ts": ts,
+                        "model": model,
+                        "source": source,
+                        "cost_usd": round(cost, 4),
+                        "input": row.get("input"),
+                        "output": row.get("output"),
+                    })
+    except Exception as exc:
+        return 500, {"error": f"ledger read failed: {exc}"}
+
+    if rolling_24h_usd > COST_ANOMALY_DAY_USD:
+        anomalies.insert(0, {
+            "kind": "day_window",
+            "cost_usd": round(rolling_24h_usd, 4),
+            "threshold_usd": COST_ANOMALY_DAY_USD,
+            "window_hours": 24,
+        })
+
+    top_models = sorted(by_model.items(), key=lambda kv: kv[1], reverse=True)[:8]
+    top_sources = sorted(by_source.items(), key=lambda kv: kv[1], reverse=True)[:8]
+
+    return 200, {
+        "today_usd": round(today_usd, 4),
+        "month_usd": round(month_usd, 4),
+        "total_usd": round(total_usd, 4),
+        "rolling_24h_usd": round(rolling_24h_usd, 4),
+        "row_count": row_count,
+        "top_models": [{"model": m, "cost_usd": round(c, 4)} for m, c in top_models],
+        "top_sources": [{"source": s, "cost_usd": round(c, 4)} for s, c in top_sources],
+        "anomalies": anomalies[:50],
+        "thresholds": {
+            "single_row_usd": COST_ANOMALY_SINGLE_ROW_USD,
+            "day_usd": COST_ANOMALY_DAY_USD,
+        },
+    }
 
 
 def _route_onboarding_status(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -956,6 +1115,130 @@ def _route_trajectory_export(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     return 200, out
 
 
+def _route_trajectory_export_html(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    from launcher import trajectory as _traj
+    q = req.get("query", {})
+    out = _traj.export_html(
+        max_blob_chars=int(q.get("max_blob_chars", 300)),
+        include_args=str(q.get("include_args", "1")).lower() not in {"0", "false", ""},
+    )
+    return 200, out
+
+
+# ─── GUI operator runtime ───────────────────────────────────────────────────
+
+
+def _bool_req(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+# Hard bounds on /api/gui_operator/runs request payload. Out-of-range values
+# return 400 rather than being silently clamped so the GUI surfaces it.
+GUI_RUN_MAX_LOOP = 50
+GUI_RUN_MAX_WAIT_S = 30.0
+
+
+def _route_gui_runs_list(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    from launcher.gui_operator_runtime import registry
+
+    return 200, {"runs": [r.to_dict() for r in registry().list()]}
+
+
+def _route_gui_runs_start(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    from launcher.gui_operator_runtime import registry
+
+    body = req.get("body") or {}
+    instruction = str(body.get("instruction") or body.get("task") or "").strip()
+    if not instruction:
+        return 400, {"error": "missing_instruction"}
+    try:
+        max_loop = int(body.get("max_loop") or 5)
+        loop_wait = float(body.get("loop_wait") or 1.0)
+    except (TypeError, ValueError):
+        return 400, {"error": "invalid_numeric_param"}
+    if max_loop < 1 or max_loop > GUI_RUN_MAX_LOOP:
+        return 400, {
+            "error": "max_loop_out_of_range",
+            "detail": f"max_loop must be 1..{GUI_RUN_MAX_LOOP}",
+        }
+    if loop_wait < 0 or loop_wait > GUI_RUN_MAX_WAIT_S:
+        return 400, {
+            "error": "loop_wait_out_of_range",
+            "detail": f"loop_wait must be 0..{GUI_RUN_MAX_WAIT_S}s",
+        }
+    try:
+        run = registry().start(
+            instruction=instruction,
+            max_loop=max_loop,
+            loop_wait=loop_wait,
+            dry_run=_bool_req(body.get("dry_run"), True),
+            backend=str(body.get("backend") or "auto"),
+            all_screens=_bool_req(body.get("all_screens"), False),
+            include_base64=_bool_req(body.get("include_base64"), False),
+        )
+    except Exception as exc:
+        return 500, {"error": "start_failed", "detail": str(exc)}
+    return 202, {"run": run.to_dict()}
+
+
+def _route_gui_runs_get(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    from launcher.gui_operator_runtime import registry
+
+    run = registry().get(req["params"]["run_id"])
+    if run is None:
+        return 404, {"error": "not_found"}
+    return 200, {"run": run.to_dict()}
+
+
+def _route_gui_runs_pause(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    from launcher.gui_operator_runtime import registry
+
+    run = registry().pause(req["params"]["run_id"])
+    if run is None:
+        return 404, {"error": "not_found"}
+    return 200, {"run": run.to_dict()}
+
+
+def _route_gui_runs_resume(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    from launcher.gui_operator_runtime import registry
+
+    run = registry().resume(req["params"]["run_id"])
+    if run is None:
+        return 404, {"error": "not_found"}
+    return 200, {"run": run.to_dict()}
+
+
+def _route_gui_runs_stop(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    from launcher.gui_operator_runtime import registry
+
+    run = registry().stop(req["params"]["run_id"])
+    if run is None:
+        return 404, {"error": "not_found"}
+    return 200, {"run": run.to_dict()}
+
+
+def _route_gui_sidecar_status(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    import shutil
+
+    root = _project_root()
+    configured = bool(os.environ.get("UI_TARS_SIDECAR_URL"))
+    package_hint = os.path.join(root, "gui", "ui-tars-sidecar", "package.json")
+    return 200, {
+        "configured": configured,
+        "url": os.environ.get("UI_TARS_SIDECAR_URL", ""),
+        "node_available": shutil.which("node") is not None,
+        "sidecar_package": package_hint if os.path.exists(package_hint) else "",
+        "mode": "optional",
+        "message": "UI-TARS SDK sidecar is optional; Python gui_operator is the default runtime.",
+    }
+
+
 # ── Skills self-improve (#6) ─────────────────────────────────────────
 
 
@@ -1039,6 +1322,7 @@ ROUTES: list[tuple[str, str, Callable[[dict[str, Any]], tuple[int, dict[str, Any
     ("GET", "/api/skills", _route_skills_list),
     ("GET", "/api/token_usage", _route_token_usage),
     ("POST", "/api/token_usage/reset", _route_token_usage_reset),
+    ("GET", "/api/cost/summary", _route_cost_summary),
     ("GET", "/api/onboarding/status", _route_onboarding_status),
     ("POST", "/api/onboarding/save", _route_onboarding_save),
     ("GET", "/api/doctor", _route_doctor),
@@ -1053,6 +1337,14 @@ ROUTES: list[tuple[str, str, Callable[[dict[str, Any]], tuple[int, dict[str, Any
     ("GET", "/api/checkpoints/<task_id>/load", _route_checkpoints_load),
     ("DELETE", "/api/checkpoints/<task_id>", _route_checkpoints_clear),
     ("GET", "/api/trajectory/export", _route_trajectory_export),
+    ("GET", "/api/trajectory/export_html", _route_trajectory_export_html),
+    ("GET", "/api/gui_operator/runs", _route_gui_runs_list),
+    ("POST", "/api/gui_operator/runs", _route_gui_runs_start),
+    ("GET", "/api/gui_operator/runs/<run_id>", _route_gui_runs_get),
+    ("POST", "/api/gui_operator/runs/<run_id>/pause", _route_gui_runs_pause),
+    ("POST", "/api/gui_operator/runs/<run_id>/resume", _route_gui_runs_resume),
+    ("POST", "/api/gui_operator/runs/<run_id>/stop", _route_gui_runs_stop),
+    ("GET", "/api/gui_operator/sidecar", _route_gui_sidecar_status),
     ("GET", "/api/skills/proposals", _route_skills_proposals_list),
     ("POST", "/api/skills/proposals", _route_skills_proposals_create),
     ("POST", "/api/skills/proposals/<proposal_id>/decide", _route_skills_proposals_decide),
@@ -1264,14 +1556,38 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             super().log_message(format, *args)
 
     def _cors_origin(self) -> str:
-        """Echo the request's Origin only when WLWL_API_AUTH_TOKEN is set
-        (because then real-origin browsers must opt in). With no token (i.e.
-        loopback-dev mode) keep the legacy ``*`` so the local GUI keeps
-        working without ceremony."""
+        """Echo only allow-listed Origins.
+
+        Without this gate, a ``*`` response combined with a permissive
+        ``Allow-Headers`` lets any locally-rendered page (file://, browser
+        tab, embedded webview) POST JSON to ``127.0.0.1:<port>`` and burn
+        the user's LLM credits via ``/api/projects/<id>/messages`` or, worse,
+        leak the stored API key through ``/api/llm/test`` to an
+        attacker-controlled ``apibase``.
+
+        The desktop Tauri shell speaks one of:
+          * ``tauri://localhost`` (Windows / Linux)
+          * ``http://tauri.localhost`` (Windows WebView2 fallback)
+          * ``http://localhost:<vite>`` / ``http://127.0.0.1:<vite>`` (dev)
+
+        Requests carrying ``WLWL_API_AUTH_TOKEN`` (bearer-authenticated)
+        echo their own Origin since the bearer gate already vetted them.
+        Same-origin requests (no Origin header — curl, internal tools,
+        Tauri's WRY in some builds) get ``null``, which CORS treats as
+        opaque and same-origin alike.
+        """
+        origin = (self.headers.get("Origin") or "").strip()
         if (os.environ.get("WLWL_API_AUTH_TOKEN") or "").strip():
-            origin = (self.headers.get("Origin") or "").strip()
+            # Token-gated — accept whatever Origin the authenticated caller declared.
             return origin or "null"
-        return "*"
+        if not origin:
+            return "null"
+        if _origin_allowed(origin):
+            return origin
+        # Unknown origin against an unauthenticated server: refuse CORS
+        # entirely. The browser will block reading the response, which is
+        # the correct behaviour for an attacker iframe / file:// page.
+        return "null"
 
     def _send_json(self, payload: Any, status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")

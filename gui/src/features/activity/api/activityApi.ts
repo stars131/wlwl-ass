@@ -50,3 +50,48 @@ export function exportTrajectory(
   const qs = params.toString();
   return request(`/api/trajectory/export${qs ? `?${qs}` : ''}`, trajectoryExportSchema);
 }
+
+export function exportTrajectoryHtml(
+  opts: { max_blob_chars?: number; include_args?: boolean } = {},
+): Promise<TrajectoryExport> {
+  const params = new URLSearchParams();
+  if (opts.max_blob_chars != null) params.set('max_blob_chars', String(opts.max_blob_chars));
+  if (opts.include_args != null) params.set('include_args', opts.include_args ? '1' : '0');
+  const qs = params.toString();
+  return request(`/api/trajectory/export_html${qs ? `?${qs}` : ''}`, trajectoryExportSchema);
+}
+
+// ── Cost ledger summary (F3) ─────────────────────────────────────────
+
+export const costAnomalySchema = z.object({
+  kind: z.string(),
+  ts: z.string().optional(),
+  model: z.string().optional(),
+  source: z.string().optional(),
+  cost_usd: z.number(),
+  input: z.number().optional(),
+  output: z.number().optional(),
+  threshold_usd: z.number().optional(),
+  window_hours: z.number().optional(),
+});
+export type CostAnomaly = z.infer<typeof costAnomalySchema>;
+
+export const costSummarySchema = z.object({
+  today_usd: z.number(),
+  month_usd: z.number(),
+  total_usd: z.number(),
+  rolling_24h_usd: z.number(),
+  row_count: z.number(),
+  top_models: z.array(z.object({ model: z.string(), cost_usd: z.number() })),
+  top_sources: z.array(z.object({ source: z.string(), cost_usd: z.number() })),
+  anomalies: z.array(costAnomalySchema),
+  thresholds: z.object({
+    single_row_usd: z.number(),
+    day_usd: z.number(),
+  }),
+});
+export type CostSummary = z.infer<typeof costSummarySchema>;
+
+export function fetchCostSummary(): Promise<CostSummary> {
+  return request('/api/cost/summary', costSummarySchema);
+}

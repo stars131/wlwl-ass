@@ -1,0 +1,9 @@
+{
+  "name": "wlwl-ass-ui-tars-sidecar",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Optional UI-TARS SDK sidecar integration point for wlwl-ass",
+  "scripts": {
+    "dev": "node server.js"
+  }
+}

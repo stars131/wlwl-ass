@@ -68,6 +68,7 @@ class ProjectManager:
         project.setdefault("project_root", DEFAULT_OPTIONS["project_root"])
         project.setdefault("use_project_context", DEFAULT_OPTIONS["use_project_context"])
         project.setdefault("autonomous_enabled", DEFAULT_OPTIONS["autonomous_enabled"])
+        project.setdefault("autonomous_interval_s", DEFAULT_OPTIONS["autonomous_interval_s"])
         project.setdefault("port", None)
         project.setdefault("pid", None)
         return project
@@ -149,6 +150,7 @@ class ProjectManager:
                 "project_root": opts["project_root"],
                 "use_project_context": opts["use_project_context"],
                 "autonomous_enabled": opts["autonomous_enabled"],
+                "autonomous_interval_s": opts["autonomous_interval_s"],
                 "last_error": "",
                 "pinned": False,
                 "description": "",
@@ -187,6 +189,19 @@ class ProjectManager:
             self._touch_project(project)
             self._save()
         return True
+
+    def set_autonomous(self, project_id: str, enabled: bool) -> dict | None:
+        with self.lock:
+            project = self._by_id(project_id)
+            if not project:
+                return None
+            project["autonomous_enabled"] = bool(enabled)
+            self._touch_project(project)
+            self._save()
+        runtime = self.session(project_id)
+        if runtime:
+            runtime.set_autonomous(bool(enabled), trigger_now=True)
+        return self.get(project_id)
 
     def _read_log_tail(self, log_path: str | None, max_chars: int = 1200) -> str:
         if not log_path or not os.path.exists(log_path):

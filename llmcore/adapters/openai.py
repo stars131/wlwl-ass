@@ -33,7 +33,7 @@ from llmcore.adapters.anthropic import NativeClaudeSession
 _RESP_CACHE_KEY = str(uuid.uuid4())
 
 
-def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
+def _parse_openai_sse(resp_lines, api_mode="chat_completions", model=""):
     """Parse OpenAI SSE stream (chat_completions or responses API).
     Yields text chunks, returns list[content_block].
     content_block: {type:'text', text:str} | {type:'tool_use', id:str, name:str, input:dict}
@@ -91,7 +91,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
                 break
             elif etype == "response.completed":
                 usage = evt.get("response", {}).get("usage", {})
-                _record_usage(usage, api_mode)
+                _record_usage(usage, api_mode, model=model)
                 break
         blocks = []
         if content_text:
@@ -145,7 +145,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
                     tc_buf[idx]["id"] = tc["id"]
             usage = evt.get("usage")
             if usage:
-                _record_usage(usage, api_mode)
+                _record_usage(usage, api_mode, model=model)
         blocks = []
         if reasoning_text:
             blocks.append({"type": "thinking", "thinking": reasoning_text})
@@ -162,10 +162,13 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
         return blocks
 
 
-def _parse_openai_json(data, api_mode="chat_completions"):
+def _parse_openai_json(data, api_mode="chat_completions", model=""):
+    # Server-reported model wins over caller hint when available.
+    srv_model = data.get("model") if isinstance(data, dict) else None
+    model = srv_model or model
     blocks = []
     if api_mode == "responses":
-        _record_usage(data.get("usage") or {}, api_mode)
+        _record_usage(data.get("usage") or {}, api_mode, model=model)
         for item in (data.get("output") or []):
             if item.get("type") == "message":
                 for p in (item.get("content") or []):
@@ -180,7 +183,7 @@ def _parse_openai_json(data, api_mode="chat_completions"):
                 blocks.append({"type": "tool_use", "id": item.get("call_id", item.get("id", "")),
                                "name": item.get("name", ""), "input": args})
     else:
-        _record_usage(data.get("usage") or {}, api_mode)
+        _record_usage(data.get("usage") or {}, api_mode, model=model)
         msg = (data.get("choices") or [{}])[0].get("message", {})
         reasoning = msg.get("reasoning_content", "")
         if reasoning:
@@ -288,7 +291,7 @@ def _openai_stream(api_base, api_key, messages, model, api_mode='chat_completion
                     err = f"!!!Error: HTTP {r.status_code}" + (f": {body}" if body else "")
                     yield err
                     return [{"type": "text", "text": err}]
-                gen = _parse_openai_sse(r.iter_lines(), api_mode) if stream else _parse_openai_json(r.json(), api_mode)
+                gen = _parse_openai_sse(r.iter_lines(), api_mode, model=model) if stream else _parse_openai_json(r.json(), api_mode, model=model)
                 try:
                     while True:
                         streamed = True

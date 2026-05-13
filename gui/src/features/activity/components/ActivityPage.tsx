@@ -5,8 +5,8 @@ import { useTranslation } from 'react-i18next';
 import { ProcessesCard } from '@/features/processes';
 import { useLogStream } from '@/lib/useLogStream';
 
-import { exportTrajectory, type TrajectoryExport } from '../api/activityApi';
-import { useRecentActivity } from '../hooks/useActivity';
+import { exportTrajectory, exportTrajectoryHtml, type TrajectoryExport } from '../api/activityApi';
+import { useCostSummary, useRecentActivity } from '../hooks/useActivity';
 import { activityEventSchema, type ActivityEvent, type ActivityPhase } from '../types';
 
 const MAX_KEPT = 1000;
@@ -30,12 +30,18 @@ function formatTime(iso: string): string {
 }
 
 const PHASE_STYLE: Record<ActivityPhase, string> = {
+  task_start: 'text-sky-600 dark:text-sky-400',
+  task_end: 'text-slate-600 dark:text-slate-300',
   tool_start: 'text-blue-600 dark:text-blue-400',
   tool_end: 'text-emerald-600 dark:text-emerald-400',
   turn_end: 'text-purple-600 dark:text-purple-400',
+  gui_step: 'text-amber-600 dark:text-amber-400',
 };
 
 const PHASE_LABEL: Record<ActivityPhase, string> = {
+  task_start: 'task',
+  task_end: 'done',
+  gui_step: 'gui',
   tool_start: '▶ start',
   tool_end: '✓ end',
   turn_end: '⏎ turn',
@@ -49,6 +55,21 @@ function compactArgs(args: Record<string, unknown> | undefined): string {
   } catch {
     return '';
   }
+}
+
+function eventSummary(e: ActivityEvent): string {
+  if (e.phase === 'turn_end') return e.summary || JSON.stringify(e.exit_reason);
+  if (e.phase === 'tool_end') return e.elapsed_s !== undefined ? `${e.elapsed_s.toFixed(2)}s` : '';
+  if (e.phase === 'tool_start') return compactArgs(e.args);
+  if (e.phase === 'gui_step') {
+    const status = typeof e.status === 'string' ? e.status : '';
+    const action = typeof e.action === 'string' ? e.action : '';
+    const path = typeof e.screenshot_path === 'string' ? e.screenshot_path : '';
+    return [status, action, path].filter(Boolean).join(' ');
+  }
+  if (e.phase === 'task_start') return typeof e.query_preview === 'string' ? e.query_preview : '';
+  if (e.phase === 'task_end') return typeof e.outcome === 'string' ? e.outcome : '';
+  return '';
 }
 
 /**
@@ -87,8 +108,19 @@ export function ActivityPage(): JSX.Element {
       setExportState({ state: 'error', error: String(err) });
     }
   };
+  const onExportHtml = async () => {
+    setExportState({ state: 'pending' });
+    try {
+      const data = await exportTrajectoryHtml({ max_blob_chars: 300, include_args: true });
+      setExportState({ state: 'done', data });
+    } catch (err) {
+      setExportState({ state: 'error', error: String(err) });
+    }
+  };
 
   const snapshot = useRecentActivity(500);
+  const costSummary = useCostSummary();
+  const [costExpanded, setCostExpanded] = useState(false);
   const stream = useLogStream(mode === 'live' ? '/api/activity/stream' : null, {
     maxLines: MAX_KEPT * 2,
   });
@@ -182,6 +214,14 @@ export function ActivityPage(): JSX.Element {
           >
             {exportState.state === 'pending' ? '导出中…' : '导出 trajectory'}
           </button>
+          <button
+            type="button"
+            onClick={onExportHtml}
+            disabled={exportState.state === 'pending'}
+            className="px-2 py-1 text-xs rounded border border-border hover:bg-accent disabled:opacity-50"
+          >
+            HTML 回放
+          </button>
         </div>
       </header>
 
@@ -197,6 +237,55 @@ export function ActivityPage(): JSX.Element {
       ) : null}
       {exportState.state === 'error' ? (
         <p className="text-xs text-destructive">导出失败：{exportState.error}</p>
+      ) : null}
+
+      {costSummary.data ? (
+        <div className="text-xs rounded border border-border bg-muted/30 px-3 py-1.5">
+          <div className="flex items-center gap-4 flex-wrap">
+            <span>
+              今日 <span className="font-semibold tabular-nums">${costSummary.data.today_usd.toFixed(4)}</span>
+            </span>
+            <span>
+              本月 <span className="font-semibold tabular-nums">${costSummary.data.month_usd.toFixed(2)}</span>
+            </span>
+            <span className="text-muted-foreground">
+              24h <span className="tabular-nums">${costSummary.data.rolling_24h_usd.toFixed(4)}</span>
+            </span>
+            <span className="text-muted-foreground">
+              共 {costSummary.data.row_count} 条 ledger
+            </span>
+            {costSummary.data.anomalies.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => setCostExpanded((v) => !v)}
+                className="ml-auto px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300 hover:opacity-80"
+                title={`阈值：单行 > $${costSummary.data.thresholds.single_row_usd} 或 24h > $${costSummary.data.thresholds.day_usd}`}
+              >
+                ⚠ {costSummary.data.anomalies.length} 条异常 {costExpanded ? '▴' : '▾'}
+              </button>
+            ) : (
+              <span className="ml-auto text-emerald-600 dark:text-emerald-400">✓ 无异常</span>
+            )}
+          </div>
+          {costExpanded && costSummary.data.anomalies.length > 0 ? (
+            <ul className="mt-2 space-y-1 text-xs">
+              {costSummary.data.anomalies.slice(0, 20).map((a, i) => (
+                <li key={i} className="flex gap-3 text-muted-foreground">
+                  <span className="font-mono">{a.ts ?? '—'}</span>
+                  <span className="font-semibold text-red-700 dark:text-red-300 tabular-nums">
+                    ${a.cost_usd.toFixed(4)}
+                  </span>
+                  <span>{a.kind === 'day_window' ? `24h 窗口超过 $${a.threshold_usd}` : `${a.model ?? ''} · ${a.source ?? ''}`}</span>
+                  {a.input != null || a.output != null ? (
+                    <span className="text-muted-foreground">
+                      in={a.input ?? 0} out={a.output ?? 0}
+                    </span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
       ) : null}
 
       <div className="flex items-center gap-3 text-xs text-muted-foreground">
@@ -252,15 +341,7 @@ export function ActivityPage(): JSX.Element {
                 {e.tool ? (
                   <span className="font-semibold shrink-0">{e.tool}</span>
                 ) : null}
-                <span className="text-muted-foreground truncate">
-                  {e.phase === 'turn_end'
-                    ? e.summary || JSON.stringify(e.exit_reason)
-                    : e.phase === 'tool_end'
-                    ? e.elapsed_s !== undefined
-                      ? `${e.elapsed_s.toFixed(2)}s`
-                      : ''
-                    : compactArgs(e.args)}
-                </span>
+                <span className="text-muted-foreground truncate">{eventSummary(e)}</span>
               </li>
             ))}
           </ul>

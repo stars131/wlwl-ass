@@ -1,0 +1,19 @@
+name: 02_activity_cost_bar
+description: Navigate to Activity tab and confirm the cost summary bar renders.
+steps:
+  - action: goto
+    path: /
+    wait_until: domcontentloaded
+  - action: wait_for
+    selector: 'button:has-text("Activity"), button:has-text("活动")'
+    timeout_ms: 10000
+  - action: click
+    selector: 'button:has-text("Activity"), button:has-text("活动")'
+  - action: wait_for
+    selector: 'button:has-text("导出 trajectory"), button:has-text("导出中")'
+    timeout_ms: 10000
+  - action: sleep
+    seconds: 1.5
+  - action: screenshot
+    name: activity_with_cost_bar
+    expected_change: "今日/本月数字可能随实际开销变化；ledger 为空时显示 $0.0000 也算正常"

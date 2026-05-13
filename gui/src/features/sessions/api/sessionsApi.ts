@@ -94,6 +94,15 @@ export async function renameProject(id: string, name: string): Promise<Project> 
   return data.project;
 }
 
+export async function setProjectAutonomous(id: string, autonomousEnabled: boolean): Promise<Project> {
+  const data = await request(
+    `/api/projects/${encodeURIComponent(id)}`,
+    singleProjectSchema,
+    { method: 'PATCH', body: { autonomous_enabled: autonomousEnabled } },
+  );
+  return data.project;
+}
+
 export async function pinProject(id: string, pinned: boolean): Promise<Project> {
   const data = await request(
     `/api/projects/${encodeURIComponent(id)}/pin`,

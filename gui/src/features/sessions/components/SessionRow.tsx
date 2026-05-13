@@ -5,6 +5,7 @@ import {
   useDeleteProject,
   usePinProject,
   useProjectCheckpoints,
+  useSetProjectAutonomous,
   useStartProject,
   useStopProject,
 } from '../hooks/useSessions';
@@ -31,6 +32,7 @@ export function SessionRow({
   const start = useStartProject();
   const stop = useStopProject();
   const pin = usePinProject();
+  const setAutonomous = useSetProjectAutonomous();
   const del = useDeleteProject();
   const [resumePanelOpen, setResumePanelOpen] = useState(false);
   const checkpoints = useProjectCheckpoints(resumePanelOpen ? project.id : null);
@@ -106,6 +108,23 @@ export function SessionRow({
 
       <div className="mt-2 flex items-center justify-between gap-2 flex-wrap">
         <ApiPicker project={project} />
+        <label
+          className="flex items-center gap-1.5 rounded border border-border px-2 py-0.5 text-xs"
+          title={project.running ? '切换后会立即影响当前会话' : '开启后下次启动该会话会自动运行自主流程'}
+        >
+          <input
+            type="checkbox"
+            checked={Boolean(project.autonomous_enabled)}
+            disabled={setAutonomous.isPending}
+            onChange={(e) => {
+              setAutonomous.mutate({
+                id: project.id,
+                autonomousEnabled: e.target.checked,
+              });
+            }}
+          />
+          <span>自主流程</span>
+        </label>
         <div className="flex gap-1">
           <button
             type="button"

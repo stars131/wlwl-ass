@@ -1,0 +1,16 @@
+name: 03_settings_tab
+description: Navigate to the Settings tab and screenshot the form.
+steps:
+  - action: goto
+    path: /
+    wait_until: domcontentloaded
+  - action: wait_for
+    selector: 'button:has-text("Settings"), button:has-text("设置")'
+    timeout_ms: 10000
+  - action: click
+    selector: 'button:has-text("Settings"), button:has-text("设置")'
+  - action: sleep
+    seconds: 0.8
+  - action: screenshot
+    name: settings_loaded
+    expected_change: ""

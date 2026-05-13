@@ -34,10 +34,12 @@ that should run without any of the LLM-dependent code paths.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 from launcher import activity_log
@@ -112,16 +114,17 @@ def iter_runs(*, activity_dir: str | None = None, include_args: bool = False) ->
     runs: list[Run] = []
     current: Run | None = None
     for ev in _iter_event_lines(activity_dir):
-        if ev.get("phase") != "turn_end":
+        phase = ev.get("phase")
+        if phase not in {"turn_end", "gui_step"}:
             continue
         turn = ev.get("turn")
-        if not isinstance(turn, int) or turn < 1:
+        if phase == "turn_end" and (not isinstance(turn, int) or turn < 1):
             continue
         # turn==1 closes the previous run (if any) and forces a new one.
         # A non-1 turn before any turn==1 (e.g. crash before first turn_end
         # of a fresh run) falls through and seeds a synthesized run rather
         # than dropping the data.
-        if turn == 1 and current is not None:
+        if phase == "turn_end" and turn == 1 and current is not None:
             runs.append(current)
             current = None
         if current is None:
@@ -135,6 +138,7 @@ def iter_runs(*, activity_dir: str | None = None, include_args: bool = False) ->
 
 
 def _absorb_event(run: Run, ev: dict[str, Any], *, include_args: bool) -> None:
+    phase = str(ev.get("phase") or "")
     run.n_turns = max(run.n_turns, int(ev.get("turn", 0) or 0))
     run.end_ts = str(ev.get("ts", "") or run.end_ts)
     skill = activity_log.normalize_related_sop(ev.get("related_sop", ""))
@@ -143,12 +147,31 @@ def _absorb_event(run: Run, ev: dict[str, Any], *, include_args: bool) -> None:
     outcome = activity_log.classify_outcome(ev.get("exit_reason"))
     if outcome:
         run.outcomes[outcome] = run.outcomes.get(outcome, 0) + 1
-    compact_ev: dict[str, Any] = {
-        "turn": ev.get("turn"),
-        "ts": ev.get("ts"),
-        "summary": ev.get("summary", ""),
-        "related_sop": skill,
-    }
+    compact_ev: dict[str, Any] = {"phase": phase, "turn": ev.get("turn"), "ts": ev.get("ts")}
+    if phase == "gui_step":
+        compact_ev.update({
+            "run_id": ev.get("run_id", ""),
+            "step": ev.get("step"),
+            "target": ev.get("target", ""),
+            "action": ev.get("action", ""),
+            "status": ev.get("status", ""),
+            "screenshot_path": ev.get("screenshot_path", ""),
+            "width": ev.get("width"),
+            "height": ev.get("height"),
+            "scale_factor": ev.get("scale_factor"),
+            "elapsed_s": ev.get("elapsed_s"),
+        })
+        if ev.get("prediction") is not None:
+            compact_ev["prediction"] = ev.get("prediction")
+        if ev.get("detail") is not None:
+            compact_ev["detail"] = ev.get("detail")
+        if include_args and ev.get("parsed") is not None:
+            compact_ev["parsed"] = ev.get("parsed")
+    else:
+        compact_ev.update({
+            "summary": ev.get("summary", ""),
+            "related_sop": skill,
+        })
     if ev.get("exit_reason"):
         compact_ev["exit_reason"] = ev["exit_reason"]
     if include_args and ev.get("args") is not None:
@@ -242,6 +265,121 @@ def export_compressed(
     }
 
 
+def export_html(
+    *,
+    output_path: str | None = None,
+    activity_dir: str | None = None,
+    include_args: bool = True,
+    max_blob_chars: int = 300,
+) -> dict[str, Any]:
+    runs = iter_runs(activity_dir=activity_dir, include_args=include_args)
+    if max_blob_chars > 0:
+        for r in runs:
+            _truncate_blobs(r.events, max_blob_chars)
+    if output_path is None:
+        output_path = os.path.join(
+            os.path.dirname(activity_log.activity_dir()), "trajectories.html"
+        )
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    body = _render_html(runs, output_path=output_path)
+    tmp = output_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(body)
+    os.replace(tmp, output_path)
+    return {
+        "path": output_path,
+        "count": len(runs),
+        "runs": [
+            {
+                "run_id": r.run_id,
+                "n_turns": r.n_turns,
+                "skills_used": r.skills_used,
+                "outcomes": r.outcomes,
+            }
+            for r in runs
+        ],
+    }
+
+
+def _render_html(runs: list[Run], *, output_path: str) -> str:
+    rows: list[str] = []
+    for run in runs:
+        rows.append(
+            "<section class='run'>"
+            f"<h2>{html.escape(run.run_id)}</h2>"
+            f"<p class='meta'>{html.escape(run.start_ts)} -> {html.escape(run.end_ts)} | turns {run.n_turns}</p>"
+        )
+        for ev in run.events:
+            rows.append(_render_event(ev, output_path=output_path))
+        rows.append("</section>")
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>wlwl-ass GUI Trajectory Replay</title>
+  <style>
+    body { margin: 0; font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; color: #17202a; background: #f7f8fb; }
+    header { position: sticky; top: 0; background: #ffffff; border-bottom: 1px solid #d8dee8; padding: 14px 18px; z-index: 1; }
+    h1 { margin: 0; font-size: 18px; }
+    main { max-width: 1180px; margin: 0 auto; padding: 18px; }
+    .run { background: #fff; border: 1px solid #d8dee8; border-radius: 8px; margin-bottom: 18px; overflow: hidden; }
+    .run h2 { font-size: 15px; margin: 0; padding: 12px 14px 0; }
+    .meta { color: #667085; margin: 3px 14px 12px; font-size: 12px; }
+    .event { border-top: 1px solid #edf0f5; padding: 12px 14px; display: grid; grid-template-columns: 260px 1fr; gap: 14px; }
+    .tag { display: inline-block; min-width: 58px; color: #7a3e00; font-weight: 700; }
+    .small { color: #667085; font-size: 12px; }
+    img { max-width: 100%; border: 1px solid #d8dee8; border-radius: 6px; background: #eef1f6; }
+    pre { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; background: #f3f5f9; border: 1px solid #d8dee8; border-radius: 6px; padding: 8px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header><h1>wlwl-ass GUI Trajectory Replay</h1></header>
+  <main>
+""" + "\n".join(rows) + """
+  </main>
+</body>
+</html>
+"""
+
+
+def _render_event(ev: dict[str, Any], *, output_path: str) -> str:
+    phase = html.escape(str(ev.get("phase") or ""))
+    ts = html.escape(str(ev.get("ts") or ""))
+    action = html.escape(str(ev.get("action") or ev.get("summary") or ""))
+    status = html.escape(str(ev.get("status") or ""))
+    screenshot = str(ev.get("screenshot_path") or "")
+    img = ""
+    if screenshot and os.path.exists(screenshot):
+        # Browsers can't render Windows backslash paths in `src=...`, and a
+        # raw `D:\path` is ambiguous. Prefer a POSIX-style relative path when
+        # the screenshot is under the HTML's parent directory; otherwise use
+        # an absolute `file://` URI which is unambiguous on every platform.
+        try:
+            shot = Path(screenshot).resolve(strict=False)
+            base = Path(output_path).resolve(strict=False).parent
+            try:
+                src = shot.relative_to(base).as_posix()
+            except ValueError:
+                src = shot.as_uri()
+        except (OSError, ValueError):
+            src = Path(screenshot).as_posix()
+        img = f"<img src='{html.escape(src)}' alt='screenshot' />"
+    detail = {
+        k: v
+        for k, v in ev.items()
+        if k not in {"phase", "ts", "screenshot_path"}
+    }
+    blob = html.escape(json.dumps(detail, ensure_ascii=False, indent=2, default=str))
+    return (
+        "<div class='event'>"
+        f"<div><span class='tag'>{phase}</span><div class='small'>{ts}</div>"
+        f"<div>{action} {status}</div></div>"
+        f"<div>{img}<pre>{blob}</pre></div>"
+        "</div>"
+    )
+
+
 # ─── CLI ─────────────────────────────────────────────────────────────────
 
 
@@ -271,6 +409,16 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_export_html(args: argparse.Namespace) -> int:
+    out = export_html(
+        output_path=args.output,
+        activity_dir=args.activity_dir,
+        include_args=args.include_args,
+    )
+    print(f"Exported {out['count']} run(s) to {out['path']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="trajectory", description=__doc__)
     parser.add_argument("--activity-dir", default=None,
@@ -283,6 +431,11 @@ def main(argv: list[str] | None = None) -> int:
     sub_export.add_argument("--include-args", action="store_true",
                             help="Keep tool args in events (larger output, full replay).")
     sub_export.set_defaults(func=_cmd_export)
+    sub_html = sub.add_parser("export-html", help="Export all runs as a local HTML replay")
+    sub_html.add_argument("--output", default=None, help="Output HTML path (default: <project>/temp/trajectories.html)")
+    sub_html.add_argument("--include-args", action="store_true",
+                          help="Keep tool args in events (larger output, full replay).")
+    sub_html.set_defaults(func=_cmd_export_html)
     args = parser.parse_args(argv)
     return args.func(args)
 

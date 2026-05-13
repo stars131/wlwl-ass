@@ -32,14 +32,20 @@ from llmcore._history import trim_messages_history
 from llmcore.base import BaseSession
 
 
-def _parse_claude_sse(resp_lines):
-    """Parse Anthropic SSE stream. Yields text chunks, returns list[content_block]."""
+def _parse_claude_sse(resp_lines, model_hint=""):
+    """Parse Anthropic SSE stream. Yields text chunks, returns list[content_block].
+
+    ``model_hint`` is what the caller asked for; the server may overwrite it
+    via ``message.model`` on the ``message_start`` event. We keep the most
+    recently observed value and thread it through to the usage recorder so
+    the cost ledger gets per-model attribution."""
     content_blocks = []
     current_block = None
     tool_json_buf = ""
     stop_reason = None
     got_message_stop = False
     warn = None
+    current_model = model_hint or ""
     for line in resp_lines:
         if not line:
             continue
@@ -56,8 +62,12 @@ def _parse_claude_sse(resp_lines):
             continue
         evt_type = evt.get("type", "")
         if evt_type == "message_start":
-            usage = evt.get("message", {}).get("usage", {})
-            _record_usage(usage, "messages")
+            msg_obj = evt.get("message", {}) or {}
+            usage = msg_obj.get("usage", {})
+            srv_model = msg_obj.get("model")
+            if srv_model:
+                current_model = srv_model
+            _record_usage(usage, "messages", model=current_model)
         elif evt_type == "content_block_start":
             block = evt.get("content_block", {})
             if block.get("type") == "text":
@@ -103,7 +113,7 @@ def _parse_claude_sse(resp_lines):
                 # message_start event, so we need a second recorder hit
                 # to keep the running tally accurate. Pass 0 for input
                 # so we don't double-count it.
-                _accumulate_usage("messages", output_tokens=out_tokens)
+                _accumulate_usage("messages", output_tokens=out_tokens, model=current_model)
         elif evt_type == "message_stop":
             got_message_stop = True
         elif evt_type == "error":
@@ -141,18 +151,25 @@ class ClaudeSession(BaseSession):
     def raw_ask(self, messages):
         if self.max_tokens is None:
             self.max_tokens = 8192
-        headers = {"x-api-key": self.api_key, "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-beta": "prompt-caching-2024-07-31"}
+        # Prompt caching is GA on Anthropic — no beta header needed. We still
+        # send the per-block cache_control breakpoints so the long-running
+        # system prompt + last 2 user turns get cached.
+        headers = {"x-api-key": self.api_key, "Content-Type": "application/json", "anthropic-version": "2023-06-01"}
         payload = {"model": self.model, "messages": messages, "max_tokens": self.max_tokens, "stream": True}
         if self.temperature != 1:
             payload["temperature"] = self.temperature
         self._apply_claude_thinking(payload)
         if self.system:
-            payload["system"] = [{"type": "text", "text": self.system, "cache_control": {"type": "persistent"}}]
+            # Anthropic only accepts cache_control={"type": "ephemeral"}
+            # (optionally with "ttl":"5m"|"1h"). The legacy "persistent"
+            # value was silently ignored, so the system prompt was never
+            # cached. Use 1h TTL — system prompts are stable for hours.
+            payload["system"] = [{"type": "text", "text": self.system, "cache_control": {"type": "ephemeral", "ttl": "1h"}}]
         try:
             with requests.post(auto_make_url(self.api_base, "messages"), headers=headers, json=payload, stream=True, timeout=(self.connect_timeout, self.read_timeout)) as r:
                 if r.status_code != 200:
                     raise Exception(f"HTTP {r.status_code} {r.content.decode('utf-8', errors='replace')[:500]}")
-                return (yield from _parse_claude_sse(r.iter_lines())) or []
+                return (yield from _parse_claude_sse(r.iter_lines(), model_hint=self.model)) or []
         except Exception as e:
             yield (err := f"!!!Error: {e}")
             return [{"type": "text", "text": err}]
@@ -225,11 +242,11 @@ class NativeClaudeSession(BaseSession):
                 if resp.status_code != 200:
                     raise Exception(f"HTTP {resp.status_code} {resp.content.decode('utf-8', errors='replace')[:500]}")
                 if self.stream:
-                    return (yield from _parse_claude_sse(resp.iter_lines())) or []
+                    return (yield from _parse_claude_sse(resp.iter_lines(), model_hint=model)) or []
                 else:
                     data = resp.json()
                     content_blocks = data.get("content", [])
-                    _record_usage(data.get("usage", {}), "messages")
+                    _record_usage(data.get("usage", {}), "messages", model=data.get("model") or model)
                     for b in content_blocks:
                         if b.get("type") == "text":
                             yield b.get("text", "")

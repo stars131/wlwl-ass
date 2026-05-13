@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 
-import { fetchActivityRecent } from '../api/activityApi';
+import { fetchActivityRecent, fetchCostSummary } from '../api/activityApi';
 
 const ACTIVITY_KEY = ['activity', 'recent'] as const;
 
@@ -9,5 +9,15 @@ export function useRecentActivity(limit: number = 200) {
     queryKey: [...ACTIVITY_KEY, limit],
     queryFn: () => fetchActivityRecent(limit),
     refetchInterval: 5000,
+  });
+}
+
+const COST_SUMMARY_KEY = ['activity', 'cost-summary'] as const;
+
+export function useCostSummary() {
+  return useQuery({
+    queryKey: COST_SUMMARY_KEY,
+    queryFn: fetchCostSummary,
+    refetchInterval: 15000,
   });
 }
