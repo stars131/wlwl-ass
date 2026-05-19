@@ -1455,6 +1455,38 @@ def _route_skills_proposals_preview(req: dict[str, Any]) -> tuple[int, dict[str,
     return 200, _ssi.preview_patch(pid)
 
 
+# ─── Ecosystem Radar ──────────────────────────────────────────────────
+
+
+def _route_radar_status(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """GET /api/radar/status — live PID, alive flag, and a log tail."""
+    from launcher import radar_control
+
+    raw = (req.get("query") or {}).get("log_lines", "20")
+    try:
+        n = max(1, min(200, int(raw)))
+    except (TypeError, ValueError):
+        n = 20
+    return 200, radar_control.status(log_lines=n)
+
+
+def _route_radar_start(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """POST /api/radar/start — spawn the runner; idempotent."""
+    from launcher import radar_control
+
+    result = radar_control.start()
+    code = 200 if result.get("ok") else 503
+    return code, result
+
+
+def _route_radar_stop(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """POST /api/radar/stop — kill the runner; idempotent."""
+    from launcher import radar_control
+
+    result = radar_control.stop()
+    return 200, result
+
+
 def _fmt_tokens(n) -> str:
     try:
         n = int(n)
@@ -1659,6 +1691,9 @@ ROUTES: list[tuple[str, str, Callable[[dict[str, Any]], tuple[int, dict[str, Any
     ("POST", "/api/skills/proposals", _route_skills_proposals_create),
     ("POST", "/api/skills/proposals/<proposal_id>/decide", _route_skills_proposals_decide),
     ("GET", "/api/skills/proposals/<proposal_id>/preview", _route_skills_proposals_preview),
+    ("GET", "/api/radar/status", _route_radar_status),
+    ("POST", "/api/radar/start", _route_radar_start),
+    ("POST", "/api/radar/stop", _route_radar_stop),
 ]
 
 
