@@ -306,6 +306,182 @@ history 等）不需要在此登记，它们留在 `README.md` 即可。
     (the user's primary calendar). Switching backends (sqlite ↔ feishu)
     does not migrate historical events; old event ids become stale.
 
+### 15. cc-switch (provider preset library inspiration)
+
+- **Source / 源地址**: https://github.com/farion1231/cc-switch
+- **License / 协议**: MIT © Jason Young (farion1231)
+- **Borrowed Scope / 借鉴范围**:
+  - **Provider preset data**: ~45 entries in `launcher/api_presets.py` were
+    transcribed from cc-switch's `src/config/claudeProviderPresets.ts` /
+    `codexProviderPresets.ts` / `geminiProviderPresets.ts`. Specifically:
+    each preset's `name`, `apibase` (from `ANTHROPIC_BASE_URL` /
+    OpenAI-compat base), default `model`, and `category` classification
+    (`official` / `cn_official` / `aggregator` / `third_party`) were
+    derived from the cc-switch tables. The same lowercase-kebab `id` slug
+    convention is used so users coming from cc-switch see familiar names.
+  - **Design pattern**: The overall "preset library + one-click install"
+    UX for `wlwl config presets` / `wlwl config add --preset` is patterned
+    on cc-switch's preset picker. The backup-rotation policy
+    (`MAX_BACKUPS = 10` snapshots in `temp/backups/`) and the deep-link
+    import URI shape (`wlwl-config://provider?preset=...`, with
+    `ccswitch://` accepted as alias) also mirror cc-switch's
+    `~/.cc-switch/backups/` rotation and `ccswitch://` scheme.
+- **Our Modifications / 我们的修改**:
+  - **Reimplemented in Python**: cc-switch is Rust+TypeScript; wlwl-ass is
+    Python. No source files were copied — `launcher/api_presets.py`,
+    `launcher/cli_config.py`, `launcher/api_endpoint_probe.py` are all
+    original Python implementations.
+  - **Normalised to wlwl-ass's two native kinds** (`native_oai` /
+    `native_claude`) rather than cc-switch's per-CLI tables (claude /
+    codex / gemini / opencode / openclaw). Providers that offer both
+    Anthropic-format and OpenAI-format endpoints appear as separate
+    entries (`kimi` / `kimi-oai`, `openrouter` / `openrouter-oai`, etc.).
+  - **Curated subset**: ~45 entries instead of cc-switch's 50+, dropping
+    affiliate/referral URLs and entries that only exist for cc-switch's
+    GUI-specific features (themes, icons, partner promotions).
+  - **CLI-first surface**: `wlwl config <sub>` + REPL `/config <sub>`
+    rather than cc-switch's Tauri GUI. Endpoint probing uses TCP connect
+    timing rather than HTTP requests (most CN relays return 401/403 on
+    bare HEADs; TCP latency answers the "is this host reachable + fast"
+    question without auth).
+- **Borrowed On / 借鉴日期**: 2026-05-16
+- **Notes / 备注**:
+  - All preset URLs are publicly documented endpoints of the listed
+    providers — no proprietary data was inherited.
+  - We do NOT carry over cc-switch's `apikey_url` affiliate parameters
+    (`?aff=ccswitch`, `?from=CH_4HHXMRYF`, etc.). Where an
+    apikey-issuance link is included it points to the bare console page.
+  - The `endpointCandidates` multi-URL probing (a more advanced cc-switch
+    feature) is implemented but currently each preset only carries one
+    `apibase`; surfacing multiple candidate URLs per provider is a
+    follow-up if users start asking for it.
+
+### 16. Cal.com (scheduling-assistant design patterns)
+
+- **Source / 源地址**: https://github.com/calcom/cal.com
+- **License / 协议**: AGPL-3.0
+- **Borrowed Scope / 借鉴范围**:
+  - **Design patterns only — no code copy**: ADR-0011 / spec
+    `docs/specs/feishu-concierge-bot.md` borrow Cal.com's data-shape
+    intuition for the **slot-proposal API** (`duration_minutes`,
+    `earliest`, `latest`, `preferred_window` inputs; ranked slot list
+    output with `exhausted` flag).
+  - **Working-hours / buffer model**: the distinction between
+    `working_hours` (publishable availability) and the user's *actual*
+    calendar is taken from Cal.com's "event-type schedule" concept,
+    where the bookable window is intentionally narrower than the user's
+    real free time.
+  - **Owner-approval-before-write pattern**: Cal.com's "manual
+    approval" event type — bookings sit as `PENDING` until the owner
+    approves — is the model behind the concierge's
+    `requires_approval=true` capability-token claim on
+    `calendar.create_event.v1`.
+- **Our Modifications / 我们的修改**:
+  - **Reimplemented in Python** in `llmcore/workers/slot_worker.py`
+    (Phase 1, not yet landed). No TypeScript / React / Prisma code from
+    Cal.com is imported.
+  - **Chat-native UX** rather than booking-page UX: the concierge
+    proposes slots in natural language inside a Feishu DM; Cal.com's
+    UX is web-form.
+  - **Owner-approval surface** is a Feishu interactive card, not an
+    email + dashboard.
+- **Borrowed On / 借鉴日期**: 2026-05-17
+- **Notes / 备注**:
+  - AGPL-3.0 is preserved by the "design patterns only — no code copy"
+    boundary. If any future change pulls actual Cal.com source into
+    `wlwl-ass`, this entry must be revised and the AGPL obligations
+    (including viral re-licensing of the surrounding module) honored.
+  - The closed-source SaaS variants (Calendly, Reclaim.ai, Motion) are
+    mentioned in `docs/specs/feishu-concierge-bot.md § 10` as general
+    industry-pattern references. No code or specific algorithm is taken
+    from them, so they do not get their own ATTRIBUTION entry (per the
+    "link only, no borrow" rule above).
+
+### 17. Khoj (personal RAG knowledge base patterns)
+
+- **Source / 源地址**: https://github.com/khoj-ai/khoj
+- **License / 协议**: AGPL-3.0
+- **Borrowed Scope / 借鉴范围**:
+  - **Design patterns only — no code copy**: the concierge's
+    `concierge.kb_answer.v1` worker (Phase 1, not yet landed) is
+    informed by Khoj's "personal RAG over owner-curated notes" model:
+    a small per-user knowledge base, BM25 (or embedding) lookup,
+    confidence-thresholded answers, polite "I don't know" fallback.
+  - **Per-topic visibility gating**: Khoj's notebook / file-level
+    visibility scoping inspired the concierge's `topics_allowed`
+    config — the KB can hold more than the bot is allowed to share,
+    and the owner curates the allowlist explicitly.
+- **Our Modifications / 我们的修改**:
+  - **Drastically simplified storage**: a single `temp/concierge_kb.jsonl`
+    file rather than Khoj's full-text + embedding + Postgres stack.
+  - **Chat-bot-only surface**: no web UI, no desktop client; the
+    concierge IS the only consumer.
+  - **Topic-allowlist gate** as a hard pre-send filter, not a
+    soft-rerank — Khoj allows access via UI controls; we deny outbound
+    in worker code so a jailbroken intent can't bypass it.
+- **Borrowed On / 借鉴日期**: 2026-05-17
+- **Notes / 备注**:
+  - AGPL-3.0 boundary preserved by the "design patterns only — no code
+    copy" rule. Same caveat as #16.
+
+### 18. NoneBot 2 + Koishi (Chinese chat-bot framework patterns)
+
+- **Source / 源地址**:
+  - https://github.com/nonebot/nonebot2 — NoneBot 2, MIT
+  - https://github.com/koishijs/koishi — Koishi, MIT
+- **License / 协议**: MIT (both)
+- **Borrowed Scope / 借鉴范围**:
+  - **Design patterns only — no code copy**: the concierge's
+    state-machine-first runtime (spec § 4.3) is patterned on
+    NoneBot/Koishi's per-session matcher/handler model — intent matched
+    by rule first, LLM only on miss; explicit state transitions; plugin
+    permission scope is checked at the dispatch boundary, not in
+    application code.
+  - **Plugin-permission convention**: both projects ship a
+    `permission` / `scope` concept where each handler declares what it
+    needs. ADR-0011's "capability allowlist stamped at agent boot"
+    follows the same shape.
+- **Our Modifications / 我们的修改**:
+  - **Different runtime substrate**: NoneBot/Koishi are general
+    multi-platform bot frameworks; the concierge is a single-purpose
+    agent that consumes wlwl-ass's kernel API (ADR-0008) instead of a
+    plugin registry. No source from either project is imported.
+  - **State machine is bounded to 5 states** specific to
+    schedule + Q&A + escalation; NoneBot's matcher tree is open-ended.
+- **Borrowed On / 借鉴日期**: 2026-05-17
+- **Notes / 备注**:
+  - Both projects are widely-used reference implementations in the
+    Chinese chat-bot community; their conventions inform what users
+    coming from those frameworks will find familiar in wlwl-ass's
+    concierge layer.
+
+### 19. anthropic-cookbook (Customer Concierge prompt patterns)
+
+- **Source / 源地址**: https://github.com/anthropics/anthropic-cookbook
+- **License / 协议**: MIT
+- **Borrowed Scope / 借鉴范围**:
+  - **Prompt design patterns**: the concierge's persona template
+    (`bots.feishu_concierge.persona`) and out-of-scope refusal phrases
+    follow the cookbook's "Customer Service Agent" and "Customer
+    Concierge" examples — clear scope statement, named principal,
+    explicit deferral phrasing ("let me check with X"), polite refusal
+    without revealing internal tool names.
+  - **Escalation language**: the "I'll relay this to <owner>" surface
+    is patterned on the cookbook's human-handoff examples.
+- **Our Modifications / 我们的修改**:
+  - **No verbatim prompt copy** lands; the cookbook serves as a style
+    reference, and the actual `persona` string in
+    `bots.feishu_concierge.persona` is owner-supplied (we provide a
+    default that follows the patterns above).
+  - **Bilingual** (Chinese-primary, English-secondary) rather than the
+    cookbook's English examples.
+- **Borrowed On / 借鉴日期**: 2026-05-17
+- **Notes / 备注**:
+  - MIT-licensed cookbook permits direct reuse, but we keep the
+    boundary clean and do not import any prompt strings verbatim. Any
+    future code that does paste from the cookbook must update this
+    entry's "Borrowed Scope" accordingly.
+
 ---
 
 ## Update Protocol / 更新规约
@@ -365,4 +541,4 @@ A new entry is required when any of the following occur:
 
 ---
 
-*Last updated / 最后更新：2026-05-09*
+*Last updated / 最后更新：2026-05-16*

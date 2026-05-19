@@ -13,8 +13,11 @@ multiple endpoints side-by-side and reference them via ``mixin_config``.
 import json
 import os
 import re
+import time
 
 CONFIG_FILE = "launcher_api_configs.json"
+BACKUPS_DIR = "backups"
+MAX_BACKUPS = 10  # mirrors cc-switch's rotation policy
 SUPPORTED_KINDS = {"native_oai", "native_claude", "mixin"}
 REQUIRED_FIELDS = {
     "native_oai": ("name", "apikey", "apibase", "model"),
@@ -33,6 +36,7 @@ COMMON_OPTIONAL_FIELDS = (
     "max_retries",
     "connect_timeout",
     "read_timeout",
+    "temperature",
     "reasoning_effort",
     "thinking_type",
     "thinking_budget_tokens",
@@ -45,13 +49,94 @@ COMMON_OPTIONAL_FIELDS = (
     "image_capable",
 )
 
+# Field-level constraint dictionaries — consumed by GUI dropdowns, the
+# `wlwl config tune` CLI for validation hints, and normalize_config for
+# coercion. Lower-cased and stripped before comparison.
+REASONING_EFFORT_VALUES = ("none", "minimal", "low", "medium", "high", "xhigh")
+THINKING_TYPE_VALUES = ("adaptive", "enabled", "disabled")
+API_MODE_VALUES = ("chat_completions", "responses")
+
 
 def config_path(base_dir):
     return os.path.join(base_dir, "temp", CONFIG_FILE)
 
 
+def backups_dir(base_dir):
+    return os.path.join(base_dir, "temp", BACKUPS_DIR)
+
+
 def _ensure_temp(base_dir):
     os.makedirs(os.path.join(base_dir, "temp"), exist_ok=True)
+
+
+def _rotate_backup(base_dir):
+    """Copy the current config file into ``temp/backups/<ts>.json`` and
+    prune the directory to :data:`MAX_BACKUPS` most-recent entries.
+
+    Called *before* every successful write of ``launcher_api_configs.json``
+    so a bad save (typo, corrupted import, accidental wipe) can be
+    recovered by hand. Silent no-op when the file doesn't exist yet —
+    nothing to back up on a fresh install."""
+    src = config_path(base_dir)
+    if not os.path.isfile(src):
+        return None
+    dst_dir = backups_dir(base_dir)
+    os.makedirs(dst_dir, exist_ok=True)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    dst = os.path.join(dst_dir, f"{CONFIG_FILE.replace('.json', '')}-{ts}.json")
+    # Avoid overwriting if two saves land in the same second — append .N.
+    if os.path.exists(dst):
+        for n in range(1, 100):
+            cand = dst[:-5] + f".{n}.json"
+            if not os.path.exists(cand):
+                dst = cand
+                break
+    try:
+        with open(src, "rb") as f:
+            data = f.read()
+        with open(dst, "wb") as f:
+            f.write(data)
+    except OSError:
+        return None
+    _prune_backups(dst_dir)
+    return dst
+
+
+def _prune_backups(dst_dir):
+    """Keep only the :data:`MAX_BACKUPS` newest backup files."""
+    try:
+        entries = []
+        for name in os.listdir(dst_dir):
+            if not name.startswith(CONFIG_FILE.replace(".json", "")):
+                continue
+            full = os.path.join(dst_dir, name)
+            if os.path.isfile(full):
+                entries.append((os.path.getmtime(full), full))
+        entries.sort(reverse=True)
+        for _mtime, path in entries[MAX_BACKUPS:]:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def list_backups(base_dir):
+    """Return (mtime, path) tuples newest-first. Used by `wlwl config
+    backups` to surface recoverable snapshots."""
+    dst_dir = backups_dir(base_dir)
+    if not os.path.isdir(dst_dir):
+        return []
+    items = []
+    for name in os.listdir(dst_dir):
+        if not name.startswith(CONFIG_FILE.replace(".json", "")):
+            continue
+        full = os.path.join(dst_dir, name)
+        if os.path.isfile(full):
+            items.append((os.path.getmtime(full), full))
+    items.sort(reverse=True)
+    return items
 
 
 def load_api_configs(base_dir):
@@ -96,6 +181,9 @@ def save_api_configs(base_dir, configs):
             raise ValueError(msg)
     _ensure_temp(base_dir)
     path = config_path(base_dir)
+    # Rotate a snapshot of the *previous* contents before we overwrite —
+    # makes typos / accidental wipes recoverable via `wlwl config backups`.
+    _rotate_backup(base_dir)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"configs": normalized}, f, ensure_ascii=False, indent=2)
@@ -133,6 +221,20 @@ def normalize_config(config):
                 c[key] = int(c[key]) if key in {"max_tokens", "max_retries", "thinking_budget_tokens"} else float(c[key])
             except ValueError:
                 pass
+    if isinstance(c.get("temperature"), str) and c["temperature"].strip():
+        try:
+            c["temperature"] = float(c["temperature"])
+        except ValueError:
+            pass
+    for enum_key, allowed in (
+        ("reasoning_effort", REASONING_EFFORT_VALUES),
+        ("thinking_type", THINKING_TYPE_VALUES),
+        ("api_mode", API_MODE_VALUES),
+    ):
+        v = c.get(enum_key)
+        if isinstance(v, str):
+            v2 = v.strip().lower()
+            c[enum_key] = v2 if v2 in allowed or v2 == "" else v
     return c
 
 

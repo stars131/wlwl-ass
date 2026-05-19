@@ -80,3 +80,33 @@
   response_schema: {"type": "object", "required": ["audio_chunk"], "properties": {"audio_chunk": {"type": "string"}, "seq": {"type": "integer"}, "is_final": {"type": "boolean"}, "text": {"type": "string"}}}
   cost_estimate_usd: 0.0008
   default_deadline_ms: 30000
+
+# ── concierge bot (ADR-0011, Phase-1) ──
+
+- id: concierge.kb_answer.v1
+  description: BM25 lookup over the owner-curated friend-facing KB; topic-allowlist gated.
+  request_schema: {"type": "object", "required": ["q"], "properties": {"q": {"type": "string"}, "topics_allowed": {"type": "array", "items": {"type": "string"}}, "limit": {"type": "integer"}}}
+  response_schema: {"type": "object", "required": ["matched"], "properties": {"matched": {"type": "boolean"}, "topic": {"type": "string"}, "text": {"type": "string"}, "score": {"type": "number"}, "in_allowlist": {"type": "boolean"}}}
+  cost_estimate_usd: 0.0
+  default_deadline_ms: 3000
+
+- id: concierge.propose_slot.v1
+  description: Find up to N free slots in the owner's calendar honoring working_hours + buffer.
+  request_schema: {"type": "object", "required": ["duration_minutes", "earliest", "latest"], "properties": {"duration_minutes": {"type": "integer"}, "earliest": {"type": "string"}, "latest": {"type": "string"}, "preferred_window": {"type": "string"}, "working_hours": {"type": "object"}, "buffer_min": {"type": "integer"}, "max_slots": {"type": "integer"}}}
+  response_schema: {"type": "object", "required": ["slots"], "properties": {"slots": {"type": "array", "items": {"type": "object"}}, "exhausted": {"type": "boolean"}}}
+  cost_estimate_usd: 0.0
+  default_deadline_ms: 5000
+
+- id: concierge.escalate.v1
+  description: Send an approval/relay request to the owner. Phase-1 stub writes to JSONL; Phase-2 sends a Feishu interactive card via the owner-app credentials.
+  request_schema: {"type": "object", "required": ["kind", "friend_open_id", "summary"], "properties": {"kind": {"type": "string"}, "friend_open_id": {"type": "string"}, "friend_alias": {"type": "string"}, "summary": {"type": "string"}, "proposed_slot": {"type": "object"}, "payload": {"type": "object"}}}
+  response_schema: {"type": "object", "required": ["escalation_id", "sent"], "properties": {"escalation_id": {"type": "string"}, "card_message_id": {"type": "string"}, "sent": {"type": "boolean"}}}
+  cost_estimate_usd: 0.0
+  default_deadline_ms: 5000
+
+- id: concierge.audit.v1
+  description: Append-only audit log of every concierge inbound/intent/outbound event. PII-redacted.
+  request_schema: {"type": "object", "required": ["kind", "friend_open_id"], "properties": {"kind": {"type": "string"}, "friend_open_id": {"type": "string"}, "intent": {"type": "string"}, "state_before": {"type": "string"}, "state_after": {"type": "string"}, "in_text": {"type": "string"}, "out_text": {"type": "string"}, "capabilities_used": {"type": "array", "items": {"type": "string"}}, "latency_ms": {"type": "number"}, "extras": {"type": "object"}}}
+  response_schema: {"type": "object", "required": ["written"], "properties": {"written": {"type": "boolean"}, "row": {"type": "object"}}}
+  cost_estimate_usd: 0.0
+  default_deadline_ms: 2000

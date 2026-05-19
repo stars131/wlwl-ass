@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# wlwl-ass terminal launcher shim (Unix / macOS / Linux / Git-Bash on Windows).
+#
+# Mirrors wlwl.cmd: prefer .venv's python, otherwise fall back to system python.
+# Add this dir to PATH (e.g. `export PATH="$PATH:/path/to/wlwl-ass"`) and you
+# can type `wlwl` in any terminal.
+set -e
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ -x "$ROOT/.venv/bin/python" ]; then
+    exec "$ROOT/.venv/bin/python" -m launcher.cli_repl "$@"
+fi
+if [ -x "$ROOT/.venv/Scripts/python.exe" ]; then
+    # Git-Bash on Windows — .venv layout uses Scripts/, not bin/.
+    exec "$ROOT/.venv/Scripts/python.exe" -m launcher.cli_repl "$@"
+fi
+
+if command -v python3 >/dev/null 2>&1; then
+    cd "$ROOT" && exec python3 -m launcher.cli_repl "$@"
+fi
+if command -v python >/dev/null 2>&1; then
+    cd "$ROOT" && exec python -m launcher.cli_repl "$@"
+fi
+
+echo "[wlwl] Could not find a Python interpreter." >&2
+echo "       Run start_from_zero.cmd (Windows) or set up .venv first." >&2
+exit 127

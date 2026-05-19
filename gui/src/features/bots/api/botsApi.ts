@@ -5,11 +5,15 @@ import { apiHeaders, getApiBase } from '@/lib/env';
 
 import {
   botActionResponseSchema,
+  botBindingResponseSchema,
   botLogSchema,
   botsListSchema,
+  llmOptionsSchema,
   type BotActionResponse,
+  type BotBindingResponse,
   type BotLog,
   type BotsList,
+  type LlmOptions,
 } from '../types';
 
 async function request<S extends z.ZodTypeAny>(
@@ -75,5 +79,17 @@ export function installBotSdk(key: string): Promise<InstallSdkResult> {
     `/api/bots/${encodeURIComponent(key)}/install_sdk`,
     installSdkSchema,
     { method: 'POST', body: {} },
+  );
+}
+
+export function getLlmOptions(): Promise<LlmOptions> {
+  return request('/api/bots/llm_options', llmOptionsSchema);
+}
+
+export function setBotLlmBinding(key: string, binding: string): Promise<BotBindingResponse> {
+  return request(
+    `/api/bots/${encodeURIComponent(key)}/llm`,
+    botBindingResponseSchema,
+    { method: 'PATCH', body: { binding } },
   );
 }

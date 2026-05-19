@@ -107,16 +107,17 @@ GUI 「API 配置」 tab 保存条目时会按 `kind` 字段自动生成符合�
 
 | 启动器                              | 用途                                               |
 | ----------------------------------- | -------------------------------------------------- |
-| `python launch.pyw`（默认推荐）     | Tauri / Qt 主窗口：会话 / Bots / API 配置 / 设置  |
-| `python launch.pyw --legacy-shell`  | 旧的 webview + Streamlit 默认会话流（向后兼容）    |
-| `python agentmain.py`               | 纯 CLI / REPL 模式（headless / SSH）               |
-| `python frontends/qtapp.py`         | 单文件 Qt 聊天面板（独立聊天窗，不带 launcher）    |
+| `python launch.pyw`（默认推荐）     | Tauri + React 桌面 GUI：会话 / Bots / API 配置 / 设置  |
+| `wlwl`（或 `python -m launcher.cli_repl`） | 终端 REPL / 一次性任务，对标 `claude` / `codex` |
+| `python agentmain.py`               | 直跑 agent 主循环（脚本化 / SSH headless）         |
 
-CLI flag（`--feishu` `--tg` `--qq` `--wecom` `--dingtalk` `--wechat` `--sched`/`--no-sched` `--llm_no`）会写入 `temp/launcher_options.json`，启动后由 launcher 自动读取并启用。下次不带 flag 运行也保持启用，直到通过设置标签页或反向 flag 关闭。
+凭据齐全的 IM bot 由 `launcher.api_server` 在启动时自动拉起（详见
+`_auto_start_configured_bots`），无需 CLI flag 也无需手动 spawn。在 GUI 的
+**Bots** 标签页或 `~/.wlwl-ass/config.json` 的 `bots.*` 节点配置即可。
 
-## Qt 主窗口 4 标签页
+## Tauri GUI 4 标签页
 
-- **会话**：左列项目列表 + 右列项目详情；按钮含新建 / 启动 / 停止 / 打开 Streamlit / 激活 / 重命名 / 置顶 / 删除。多会话同时跑互不干扰。
+- **会话**：左列项目列表 + 右列项目详情；按钮含新建 / 启动 / 停止 / 打开聊天窗 / 激活 / 重命名 / 置顶 / 删除。多会话同时跑互不干扰。
 - **Bots**：6 行表格，列出每个聊天平台 bot 的"配置 ✅/❌/⚠️ SDK 未装"、"状态 🟢 本进程 / 🟡 外部进程 / ⚪ 已停"，每行 [启动] [停止] [日志] 三个按钮；状态每 3 秒刷新。
 - **API 配置**：增删改查 LLM 凭据。所有保存的条目同时生效，多渠道用 `kind=mixin` 的条目编排故障转移。
 - **设置**：全局默认 LLM 索引、权限模式、项目根、context/autonomous 默认开关、L4 调度器开关。修改后点保存生效；运行中的会话需重启才能采用新默认值。

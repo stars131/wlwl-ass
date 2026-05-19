@@ -9,6 +9,11 @@ ensure_safe_std_streams()
 from permissions import PermissionDecision, ToolPermissionRequest, tool_metadata
 from launcher import activity_log
 
+# ── OpenHuman-inspired modules ──
+from tokenjuice import compact_output as _tj_compact
+from web_recipe import RecipeManager as _RecipeManager
+from memory_namespace import MemoryStore as _MemoryStore, normalize_entity as _normalize_entity
+
 
 def _bool_arg(value, default=False):
     if value is None:
@@ -196,6 +201,81 @@ _memory_stats_lock = threading.Lock()
 # 否则多线程 / 多 agent 并发会互相串 cwd
 _inline_eval_cwd_lock = threading.Lock()
 
+# ── promised-but-not-done detection ─────────────────────────────────────
+# Used by WlwlAssHandler.do_no_tool: when a model returns a short text
+# response that opens with an "I will do X / 我先做X" intent but issues no
+# tool_call, the agent loop would otherwise treat it as a final response
+# and end the turn. Catching that and pushing back keeps weaker tool-use
+# models on track. Tuned to be conservative — long answers and pure
+# conclusion sentences must NOT match.
+
+_INTENT_PROMISE_MAX_VISIBLE_CHARS = 300  # longer body ⇒ assume it's a real answer
+_INTENT_PROMISE_HEAD_WINDOW = 100        # only the opening of the body is checked
+
+# Chinese: 意图副词/代词 + (一些字) + 动作动词
+_INTENT_RE_ZH = re.compile(
+    r"(?:^|[\s。\n、，,])"
+    r"(?:我(?:先|去|来|要|得|这就|马上|现在|准备|打算|会|想|将|就)"
+    r"|让我(?:们)?"
+    r"|稍等"
+    r"|接下来(?:我)?"
+    r"|马上)"
+    r"[^。\n]{0,15}?"
+    r"(?:读取?|查看?|看(?:一|看)?下?|检查|核对|核实|确认|运行|执行|启动|"
+    r"测试|分析|定位|打开|搜索|查询|查找|抓取|获取|拉取|下载|"
+    r"编辑|修改|改一?下?|写入?|创建|新建|删除|更新|尝试|调用)"
+)
+
+# English: future-tense intent + action verb
+_INTENT_RE_EN = re.compile(
+    r"\b(?:I\s*(?:'ll|will|am\s+going\s+to|shall|'m\s+going\s+to)"
+    r"|let\s+me"
+    r"|let's"
+    r"|first[,\s]+I\s*(?:'ll|will)?)"
+    r"\s+\w*\s*"
+    r"(?:read|check|inspect|run|execute|launch|test|analy[sz]e|locate|"
+    r"look|open|see|search|find|edit|modify|write|create|delete|fetch|get|"
+    r"download|investigate|verify|examine|try|call|invoke)\b",
+    flags=re.IGNORECASE,
+)
+
+# Sentences that look like intent but are actually recommendation/advice
+# (the model is telling the USER what to do, not promising its own action).
+_ADVICE_HINTS = (
+    "建议你", "推荐你", "你可以", "你应该", "请你",
+    "you should", "you can", "you may want", "i recommend", "i suggest",
+)
+
+
+def _strip_meta_blocks(text):
+    """Remove <thinking>…</thinking> and <summary>…</summary> blocks so the
+    intent detector only inspects what the user actually sees."""
+    text = re.sub(r"<thinking>[\s\S]*?</thinking>", "", text or "", flags=re.IGNORECASE)
+    text = re.sub(r"<summary>[\s\S]*?</summary>", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+def _is_intent_without_tool(content):
+    """Return True if ``content`` reads like a promised action that was
+    never actually executed (i.e. the model said "我先读日志" but didn't
+    issue any tool_call). Returns False for long answers, advice-style
+    responses, and texts without a future-tense action verb."""
+    visible = _strip_meta_blocks(content)
+    if not visible:
+        return False
+    if len(visible) > _INTENT_PROMISE_MAX_VISIBLE_CHARS:
+        # Long bodies are almost always genuine final answers that happen
+        # to contain a phrase like "我会..." somewhere — don't punish them.
+        return False
+    head = visible[:_INTENT_PROMISE_HEAD_WINDOW]
+    if not (_INTENT_RE_ZH.search(head) or _INTENT_RE_EN.search(head)):
+        return False
+    lowered = visible.lower()
+    if any(hint in lowered for hint in _ADVICE_HINTS):
+        return False
+    return True
+
+
 def log_memory_access(path):
     if 'memory' not in path: return
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -327,10 +407,32 @@ def smart_format(data, max_str_len=100, omit_str=' ... '):
     return f"{data[:max_str_len//2]}{omit_str}{data[-max_str_len//2:]}"
 
 def consume_file(dr, file):
-    if dr and os.path.exists(os.path.join(dr, file)): 
+    if dr and os.path.exists(os.path.join(dr, file)):
         with open(os.path.join(dr, file), encoding='utf-8', errors='replace') as f: content = f.read()
         os.remove(os.path.join(dr, file))
         return content
+
+
+# ── Cross-bot write fence — bot-owned path registry ─────────────────
+# Keys are bot keys from launcher.bot_manager.BOT_SPECS; values are
+# project-relative paths (files or directory prefixes) the bot considers
+# its own state. WlwlAssHandler._check_cross_bot_write blocks the agent
+# from writing into another bot's paths while ``WLWL_BOT_KEY`` is set.
+#
+# When adding a new bot, append its state paths here. Existing entries
+# are intentionally narrow — only files we *know* belong to that bot's
+# runtime state, not the whole codebase.
+_BOT_OWNED_PATHS: dict[str, list[str]] = {
+    "feishu_concierge": [
+        "temp/concierge_state",
+        "temp/concierge_audit.jsonl",
+        "temp/concierge_audit.jsonl.id_map.json",
+        "temp/concierge_escalations.jsonl",
+        "temp/concierge_kb.jsonl",
+    ],
+    "feishu": [],  # owner bot: sessions live in agent memory, no on-disk state files
+}
+
 
 class WlwlAssHandler(BaseHandler):
     '''wlwl-ass 工具库，包含多种工具的实现。工具函数自动加上了 do_ 前缀。实际工具名没有前缀。'''
@@ -344,6 +446,7 @@ class WlwlAssHandler(BaseHandler):
         self.history_info = last_history if last_history else []
         self.code_stop_signal = []
         self._done_hooks = []
+        self._mem_store = _MemoryStore()  # OpenHuman-inspired memory namespace + entity index
 
     def dispatch(self, tool_name, args, response, index=0):
         metadata = tool_metadata(tool_name)
@@ -392,7 +495,42 @@ class WlwlAssHandler(BaseHandler):
 
     def _get_abs_path(self, path):
         if not path: return ""
-        return os.path.abspath(os.path.join(self.cwd, path))   
+        return os.path.abspath(os.path.join(self.cwd, path))
+
+    def _check_cross_bot_write(self, abs_path: str) -> str:
+        """Return a refusal reason if ``abs_path`` belongs to a different bot
+        than this agent. Empty string = write allowed.
+
+        Triggers only when ``WLWL_BOT_KEY`` is set (i.e., the agent is
+        running INSIDE a bot process — see launcher.bot_manager). The CLI
+        runner has no bot identity → no fence. Override with
+        ``WLWL_CROSS_BOT_WRITE=1`` when an intentional cross-bot edit is
+        needed (rare; e.g. config migration tools).
+
+        Background: 2026-05-17 owner-bot incident — agent investigating
+        "enable concierge LLM smalltalk" decided to read/modify concierge
+        state files. self-kill guard caught the kill path; this fence
+        catches the writes.
+        """
+        if not abs_path:
+            return ""
+        self_bot = (os.environ.get("WLWL_BOT_KEY") or "").strip()
+        if not self_bot:
+            return ""
+        if os.environ.get("WLWL_CROSS_BOT_WRITE", "").strip():
+            return ""
+        norm = os.path.normpath(abs_path)
+        for other_bot, owned in _BOT_OWNED_PATHS.items():
+            if other_bot == self_bot:
+                continue
+            for owned_rel in owned:
+                owned_abs = os.path.normpath(os.path.join(self.project_root or self.cwd, owned_rel))
+                if norm == owned_abs or norm.startswith(owned_abs + os.sep):
+                    return (
+                        f"path {abs_path!r} belongs to bot:{other_bot}; "
+                        f"this agent runs as bot:{self_bot}"
+                    )
+        return ""
 
     def _extract_code_block(self, response, code_type):
         """从模型回复中提取最后一个匹配的代码块。
@@ -429,6 +567,14 @@ class WlwlAssHandler(BaseHandler):
                     except Exception as e: result = f'Error: {e}'
                 finally: os.chdir(old_cwd)
         else: result = yield from code_run(code, code_type, timeout, cwd, code_cwd=code_cwd, stop_signal=self.code_stop_signal)
+        # ── TokenJuice: compress verbose tool output ──
+        if isinstance(result, str) and len(result) > 800:
+            try:
+                tj = _tj_compact(code_type, result)
+                if tj.saved_pct >= 15:
+                    result = tj.compressed + f"\n[TokenJuice: {tj.saved_pct}% saved, {tj.original_len}→{tj.compressed_len} chars]"
+            except Exception:
+                pass  # compression failure must not break execution
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         return StepOutcome(result, next_prompt=next_prompt)
     
@@ -449,7 +595,24 @@ class WlwlAssHandler(BaseHandler):
         result = web_scan(tabs_only=tabs_only, switch_tab_id=switch_tab_id, text_only=text_only)
         content = result.pop("content", None)
         yield f'[Info] {str(result)}\n'
+        # ── WebRecipe: auto-match URL and inject extraction JS ──
+        recipe_hint = ""
+        try:
+            current_url = result.get("url", "")
+            if current_url and not tabs_only:
+                mgr = _RecipeManager()
+                recipe = mgr.match(current_url)
+                if recipe:
+                    recipe_hint = f"\n[WebRecipe] matched '{recipe.name}' ({recipe.id}) for {current_url}\n"
+                    if recipe.wait_for:
+                        recipe_hint += f"  wait_for: {recipe.wait_for}\n"
+                    recipe_hint += f"  fields: {', '.join(f.name for f in recipe.fields)}\n"
+                    recipe_hint += f"  actions: {', '.join(a.name for a in recipe.actions) if recipe.actions else 'none'}\n"
+                    recipe_hint += f"  To extract, run: web_execute_js with script=<recipe.extract_js()>\n"
+        except Exception:
+            pass  # recipe lookup failure must not break web_scan
         if content: result = json.dumps(result, ensure_ascii=False, default=json_default) + f"\n```html\n{content}\n```"
+        result = result + recipe_hint if recipe_hint else result
         next_prompt = "\n"
         return StepOutcome(result, next_prompt=next_prompt)
     
@@ -493,6 +656,17 @@ class WlwlAssHandler(BaseHandler):
     
     def do_file_patch(self, args, response):
         path = self._get_abs_path(args.get("path", ""))
+        cross = self._check_cross_bot_write(path)
+        if cross:
+            yield f"[Status] ❌ cross-bot write refused: {cross}\n"
+            return StepOutcome(
+                {"status": "error", "msg": f"cross-bot write refused: {cross}"},
+                next_prompt=(
+                    "[System] 拒绝跨 bot 写入。你想改的文件属于另一个 bot 的运行时状态，"
+                    "不应该由本 bot 的 agent 来动。如果用户确实需要改它，"
+                    "请引导用户用 launcher.config / GUI 做配置变更。"
+                ),
+            )
         yield f"[Action] Patching file: {path}\n"
         old_content = args.get("old_content", "")
         new_content = args.get("new_content", "")
@@ -509,6 +683,17 @@ class WlwlAssHandler(BaseHandler):
         '''用于对整个文件的大量处理，精细修改要用file_patch。
         需要将要写入的内容放在<file_content>标签内，或者放在代码块中'''
         path = self._get_abs_path(args.get("path", ""))
+        cross = self._check_cross_bot_write(path)
+        if cross:
+            yield f"[Status] ❌ cross-bot write refused: {cross}\n"
+            return StepOutcome(
+                {"status": "error", "msg": f"cross-bot write refused: {cross}"},
+                next_prompt=(
+                    "[System] 拒绝跨 bot 写入。你想改的文件属于另一个 bot 的运行时状态，"
+                    "不应该由本 bot 的 agent 来动。如果用户确实需要改它，"
+                    "请引导用户用 launcher.config / GUI 做配置变更。"
+                ),
+            )
         mode = args.get("mode", "overwrite")  # overwrite/append/prepend
         action_str = {"prepend": "Prepending to", "append": "Appending to"}.get(mode, "Overwriting")
         yield f"[Action] {action_str} file: {os.path.basename(path)}\n"
@@ -550,13 +735,182 @@ class WlwlAssHandler(BaseHandler):
         show_linenos = args.get("show_linenos", True)
         result = file_read(path, start=start, keyword=keyword,
                            count=count, show_linenos=show_linenos)
-        if show_linenos and not result.startswith("Error:"): result = '由于设置了show_linenos，以下返回信息为：(行号|)内容 。\n' + result 
+        if show_linenos and not result.startswith("Error:"): result = '由于设置了show_linenos，以下返回信息为：(行号|)内容 。\n' + result
         if ' ... [TRUNCATED]' in result: result += '\n\n（某些行被截断，如需完整内容可改用 code_run 读取）'
         result = smart_format(result, max_str_len=20000, omit_str='\n\n[omitted long content]\n\n')
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         log_memory_access(path)
-        if 'memory' in path or 'sop' in path: 
+        if 'memory' in path or 'sop' in path:
             next_prompt += "\n[SYSTEM TIPS] 正在读取记忆或SOP文件，若决定按sop执行请提取sop中的关键点（特别是靠后的）update working memory."
+        return StepOutcome(result, next_prompt=next_prompt)
+
+    def do_file_read_batch(self, args, response):
+        '''批量预览多个文件：每个返回首段或 keyword 命中片段，整批共享字符预算。'''
+        raw_paths = args.get('paths') or []
+        if isinstance(raw_paths, str):
+            raw_paths = [p.strip() for p in re.split(r'[,\n]', raw_paths) if p.strip()]
+        if not isinstance(raw_paths, list) or not raw_paths:
+            return StepOutcome({"status": "error", "msg": "paths must be a non-empty list"}, next_prompt="\n")
+        if len(raw_paths) > 12:
+            raw_paths = raw_paths[:12]
+        seen = set(); paths = []
+        for p in raw_paths:
+            if not isinstance(p, str) or not p.strip(): continue
+            ap = self._get_abs_path(p.strip())
+            if ap in seen: continue
+            seen.add(ap); paths.append(ap)
+        if not paths:
+            return StepOutcome({"status": "error", "msg": "no valid path after dedup"}, next_prompt="\n")
+        keyword = args.get('keyword') or None
+        try:
+            per = max(5, min(int(args.get('count') or 40), 200))
+        except (TypeError, ValueError):
+            per = 40
+        show_linenos = args.get('show_linenos', True)
+        yield f"\n[Action] file_read_batch: {len(paths)} files (count={per}, keyword={keyword!r})\n"
+        budget = _FILE_READ_BUDGET // 2
+        spent = 0; parts = []; touched_memory = False
+        for ap in paths:
+            block = file_read(ap, start=1, keyword=keyword, count=per, show_linenos=show_linenos)
+            header = f"\n=== {ap} ===\n"
+            chunk = header + block
+            if spent + len(chunk) > budget:
+                remain = max(0, budget - spent - len(header))
+                if remain > 200:
+                    chunk = header + block[:remain] + "\n... [BATCH BUDGET TRUNCATED]"
+                else:
+                    chunk = header + "... [BATCH BUDGET REACHED, skipped]"
+            parts.append(chunk)
+            spent += len(chunk)
+            log_memory_access(ap)
+            if 'memory' in ap or 'sop' in ap: touched_memory = True
+            if spent >= budget: break
+        result = ''.join(parts) or "(no files)"
+        next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
+        if touched_memory:
+            next_prompt += "\n[SYSTEM TIPS] 批量预览包含 memory/SOP 文件，决定按 SOP 执行前请提取关键点 update working memory."
+        return StepOutcome(result, next_prompt=next_prompt)
+
+    def do_task_closure_check(self, args, response):
+        '''只读检查当前任务收尾状态：R 报告 / history / TODO / approvals / PM 提案，给缺项提示。'''
+        report_id = (args.get('report_id') or '').strip().upper() or None
+        temp_root = self._get_abs_path(args.get('temp_root') or '.')
+        reports_dir = os.path.join(temp_root, 'autonomous_reports')
+        history_path = os.path.join(reports_dir, 'history.txt')
+        todo_path = os.path.join(temp_root, 'TODO.txt')
+        approvals_path = os.path.join(temp_root, 'approvals_board.md')
+        pm_path = os.path.join(temp_root, 'pm_proposals.md')
+
+        yield f"\n[Action] task_closure_check (report_id={report_id or 'auto'})\n"
+
+        def _latest_r_number():
+            best = -1
+            try:
+                for name in os.listdir(reports_dir):
+                    m = re.match(r'^R(\d+)_', name)
+                    if m: best = max(best, int(m.group(1)))
+            except OSError: pass
+            return best if best >= 0 else None
+
+        def _history_top_r():
+            try:
+                with open(history_path, 'r', encoding='utf-8', errors='replace') as f:
+                    line = f.readline().strip()
+                m = re.match(r'^R(\d+)\s*\|', line)
+                return (int(m.group(1)), line) if m else (None, line)
+            except OSError: return None, None
+
+        if report_id and not re.fullmatch(r'R\d+', report_id):
+            return StepOutcome({"status": "error", "msg": "report_id must look like R42"}, next_prompt="\n")
+
+        target_n = int(report_id[1:]) if report_id else _latest_r_number()
+        report_file = None
+        if target_n is not None:
+            try:
+                for name in os.listdir(reports_dir):
+                    if name.startswith(f'R{target_n}_'):
+                        report_file = os.path.join(reports_dir, name); break
+            except OSError: pass
+
+        hist_n, hist_line = _history_top_r()
+
+        unchecked = checked = None
+        try:
+            with open(todo_path, 'r', encoding='utf-8', errors='replace') as f:
+                txt = f.read()
+            unchecked = len(re.findall(r'\[ \]', txt))
+            checked = len(re.findall(r'\[[xX]\]', txt))
+        except OSError: pass
+
+        def _count_lines(path, pat):
+            try:
+                with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                    return sum(1 for line in f if re.search(pat, line))
+            except OSError: return None
+        approvals_rows = _count_lines(approvals_path, r'^\|\s*[^|\s]') if os.path.exists(approvals_path) else None
+        pm_open = _count_lines(pm_path, r'status[*\s]*:\s*open') if os.path.exists(pm_path) else None
+
+        lines = [f"=== task_closure_check ==="]
+        lines.append(f"target_report : R{target_n}" if target_n is not None else "target_report : (no R<n>_*.md found)")
+        if target_n is not None:
+            if report_file and os.path.getsize(report_file) > 0:
+                lines.append(f"  report_file : OK   {os.path.relpath(report_file, temp_root)} ({os.path.getsize(report_file)} bytes)")
+            elif report_file:
+                lines.append(f"  report_file : EMPTY {os.path.relpath(report_file, temp_root)}")
+            else:
+                lines.append(f"  report_file : MISSING  (no R{target_n}_*.md under autonomous_reports/)")
+        if hist_n is not None:
+            match = "YES" if hist_n == target_n else f"NO (history top is R{hist_n})"
+            lines.append(f"  history top : R{hist_n}  matches: {match}")
+            if hist_line: lines.append(f"  history line: {hist_line[:160]}")
+        else:
+            lines.append("  history top : (history.txt missing or unreadable)")
+        if unchecked is None:
+            lines.append("  TODO.txt    : MISSING")
+        else:
+            lines.append(f"  TODO.txt    : {unchecked} unchecked, {checked} checked")
+        if approvals_rows is not None:
+            lines.append(f"  approvals   : {approvals_rows} table rows in approvals_board.md")
+        if pm_open is not None:
+            lines.append(f"  pm_proposals: {pm_open} open")
+
+        suggestions = []
+        if target_n is None:
+            suggestions.append("自主收尾未发现 R<n>_*.md — 先写报告再调用本检查")
+        else:
+            if not report_file: suggestions.append(f"补写 R{target_n} 报告到 autonomous_reports/")
+            if hist_n is not None and hist_n != target_n: suggestions.append(f"在 history.txt 顶部 prepend R{target_n} 一行")
+            if hist_n is None: suggestions.append("history.txt 缺失 — 创建并 prepend R<n>")
+            if unchecked and unchecked > 0: suggestions.append(f"TODO.txt 还有 {unchecked} 条 [ ] 未勾选，确认是否本轮应勾")
+        if pm_open: suggestions.append(f"pm_proposals.md 有 {pm_open} 条 open 提案，等用户决策")
+        if approvals_rows: suggestions.append(f"approvals_board.md 有 {approvals_rows} 行待决策项")
+        if not suggestions:
+            lines.append("\n[Status] 收尾闭环看起来齐备。")
+        else:
+            lines.append("\n[Status] 缺项/提示:")
+            for s in suggestions: lines.append(f"  - {s}")
+
+        result = "\n".join(lines)
+        next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
+        return StepOutcome(result, next_prompt=next_prompt)
+
+    def do_self_readme(self, args, response):
+        '''生成 AI-Native developer Readme：聚合 cost_ledger / git log / activity / 自治报告。受 Readme.skill 启发，本地数据复刻。'''
+        from launcher import cli_readme
+        anonymize = bool(args.get('anonymize', True))
+        write_file = bool(args.get('write', True))
+        out_arg = args.get('out')
+        yield f"\n[Action] self_readme (anonymize={anonymize}, write={write_file})\n"
+        md = cli_readme.build_readme(anonymize=anonymize)
+        out_path = None
+        if write_file:
+            out_path = os.path.abspath(out_arg) if out_arg else os.path.join(cli_readme._project_root(), 'temp', 'self_readme.md')
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            with open(out_path, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(md)
+        header = f"[self_readme] {'wrote ' + out_path if out_path else '(not written)'} · {len(md)} bytes"
+        result = header + "\n\n" + md
+        next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         return StepOutcome(result, next_prompt=next_prompt)
     
     def _in_plan_mode(self): return self.working.get('in_plan_mode')
@@ -690,6 +1044,33 @@ class WlwlAssHandler(BaseHandler):
             if target is None:
                 yield "[process] kill requires pid or label\n"
                 return StepOutcome({"error": "missing_field"}, next_prompt="\n")
+            # Self-kill guard. The agent is running INSIDE a bot process
+            # (fsapp.py / fsapp_concierge.py / etc). Killing its own host
+            # crashes the whole conversation mid-turn — see fsapp.log
+            # 2026-05-17 turn-23 incident where the owner agent ran
+            # `process kill bot:feishu` and silently dropped the user.
+            self_pid = os.getpid()
+            self_bot_key = (os.environ.get("WLWL_BOT_KEY") or "").strip()
+            self_bot_label = f"bot:{self_bot_key}" if self_bot_key else ""
+            if isinstance(target, int) and target == self_pid:
+                yield f"[process] refused: pid {target} is this agent's own process.\n"
+                return StepOutcome(
+                    {"error": "self_kill_refused", "pid": target},
+                    next_prompt=(
+                        f"[System] 拒绝执行：pid={target} 是当前 agent 自己的进程。"
+                        "如果你想重启 bot，让用户去 GUI Bots 面板或 launcher 操作，"
+                        "agent 不能 kill 自己。"
+                    ),
+                )
+            if self_bot_label and isinstance(target, str) and target.strip() == self_bot_label:
+                yield f"[process] refused: label {target!r} is this agent's own bot.\n"
+                return StepOutcome(
+                    {"error": "self_kill_refused", "label": target},
+                    next_prompt=(
+                        f"[System] 拒绝执行：label={target!r} 就是当前 agent 自己的 bot。"
+                        "agent 不能 kill 自己——请引导用户去 GUI Bots 面板重启。"
+                    ),
+                )
             ok, msg = reg.kill(target, force=bool(args.get('force')))
             yield f"[process] kill {target}: {msg}\n"
             return StepOutcome({"ok": ok, "message": msg}, next_prompt="\n")
@@ -1292,7 +1673,24 @@ class WlwlAssHandler(BaseHandler):
             remaining = self._check_plan_completion()
             if remaining == 0:
                 self._exit_plan_mode(); yield "[Info] Plan完成：plan.md中0个[ ]残留，退出plan模式。\n"
-        
+
+        # Promised-but-not-done detector. Some models answer with a short
+        # intent statement ("我先读取启动日志…" / "Let me check…") and stop
+        # without issuing a tool_call. agent_loop treats that as
+        # CURRENT_TASK_DONE and the user sees the turn end prematurely.
+        # When the visible body (sans <thinking>/<summary>) is short AND
+        # opens with an intent phrase + action verb, push back instead of
+        # terminating the turn.
+        if _is_intent_without_tool(content):
+            yield "[Info] Detected intent statement without tool call — asking model to actually execute.\n"
+            return StepOutcome({}, next_prompt=(
+                "[System] 上一轮你说要做某个动作（读/查/运行/分析/…）但没有发起任何 tool_call。"
+                "在本框架里，**动作必须落到 tool_call**——纯文本描述不算执行。"
+                "请直接调用相应工具来完成你刚才打算做的事情；"
+                "如果你认为这次不需要任何动作，请用陈述句给出最终结论，"
+                "避免使用'我先/我去/让我/I will/Let me'这类未来时意图开头。"
+            ))
+
         yield "[Info] Final response to user.\n"
         return StepOutcome(response, next_prompt=None)
     
@@ -1307,6 +1705,18 @@ class WlwlAssHandler(BaseHandler):
 **禁止**：临时变量、具体推理过程、未验证信息、通用常识、你可以轻松复现的细节、只是做了但没有验证的信息
 **操作**：严格遵循提供的L0的记忆更新SOP。先 `file_read` 看现有 → 判断类型 → 最小化更新 → 无新内容跳过，保证对记忆库最小局部修改。\n
 ''' + get_global_memory()
+        # ── MemoryNamespace: provide entity index for context-aware recall ──
+        try:
+            ms = self._mem_store
+            entities_summary = []
+            for ns in ('user_pref', 'env_fact', 'skill_cache'):
+                entries = ms.query(ns)
+                if entries:
+                    entities_summary.append(f"  [{ns}] " + ", ".join(f"{e.entity_id}({e.content[:60]})" for e in entries[:5]))
+            if entities_summary:
+                prompt += "\n### [MemoryNamespace 已索引实体]\n" + "\n".join(entities_summary) + "\n写入记忆时请用 normalize_entity() 标准化实体ID，确保跨SOP/L4关联。\n"
+        except Exception:
+            pass  # namespace lookup failure must not break memory update
         yield "[Info] Start distilling good memory for long-term storage.\n"
         path = './memory/memory_management_sop.md'
         if os.path.exists(path): result = '自动读取L0内容：\n' + file_read(path, show_linenos=False)

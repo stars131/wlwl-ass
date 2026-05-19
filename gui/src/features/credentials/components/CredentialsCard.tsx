@@ -7,6 +7,7 @@ const BOT_LABELS: Record<string, string> = {
   tg: 'Telegram',
   qq: 'QQ',
   feishu: '飞书',
+  feishu_concierge: '飞书·小秘书',
   wecom: '企业微信',
   dingtalk: '钉钉',
 };
@@ -14,7 +15,8 @@ const BOT_LABELS: Record<string, string> = {
 const SECRET_HINT = (field: string) =>
   field.includes('secret') || field.includes('token') ? '***' : '';
 
-const isListField = (field: string) => field.endsWith('_allowed_users');
+const isListField = (field: string) =>
+  field.endsWith('_allowed_users') || field === 'fs_concierge_allowed_friends';
 
 /**
  * Bot credential editor card. Renders one collapsible block per bot with

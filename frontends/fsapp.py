@@ -7,7 +7,13 @@ os.chdir(PROJECT_ROOT)
 from agentmain import GeneraticAgent
 from frontends.chatapp_common import FILE_HINT, format_restore
 from frontends.continue_cmd import handle_frontend_command as handle_continue_frontend, reset_conversation
+import llmcore
 from llmcore import mykeys
+from launcher.llm_binding import (
+    parse_binding, resolve_to_config_names, synthesize_mixin_entry,
+)
+from launcher.api_config import list_api_configs
+from launcher.profiles import load_profiles
 
 import traceback
 import lark_oapi as lark
@@ -123,13 +129,30 @@ def _check_size(file_path, max_bytes):
     return True, ""
 
 
+# 飞书 OpenAPI 返回这些 code 是配置/权限层硬错误，重试无意义。
+# 99991672: 应用缺少 im:resource[:upload] scope。
+_HARD_UPLOAD_CODES = {99991672}
+
+
+class _UploadHardError(Exception):
+    def __init__(self, code, msg):
+        super().__init__(f"{code}: {msg}")
+        self.code = code
+        self.msg = msg
+
+
+_hard_error_notified = set()
+
+
 def _upload_with_retry(uploader, file_path, attempts=2):
-    """uploader 返回 truthy 即成功；失败重试，指数退避。"""
+    """uploader 返回 truthy 即成功；失败重试，指数退避。硬错误立即抛出，不重试。"""
     for i in range(attempts):
         try:
             r = uploader(file_path)
             if r:
                 return r
+        except _UploadHardError:
+            raise
         except Exception as e:
             print(f"[fs upload] attempt {i+1} error: {e!r}")
         time.sleep(0.5 * (i + 1))
@@ -358,6 +381,58 @@ _agent_lock = threading.Lock()
 client, user_tasks = None, {}
 
 
+# ── Per-bot LLM binding (set via WLWL_BOT_LLM_BINDING env var by
+#    launcher.bot_manager.start). Empty = keep current default behaviour.
+#    Resolved at module load time so the cost is paid once, not per inbound
+#    message.
+_BINDING_KIND, _BINDING_NAME = parse_binding(os.environ.get("WLWL_BOT_LLM_BINDING", ""))
+_TARGET_LLM_NAME: str | None = None  # what agent.select_llm_by_name() should match
+
+
+def _apply_binding_once() -> None:
+    """Resolve the binding into either a config ``name`` or an injected mixin
+    entry in ``llmcore.mykeys``. Idempotent — safe to call multiple times.
+
+    Single-config case: just record the name. ``GeneraticAgent``'s
+    ``load_llm_sessions`` already builds a client for every config; we just
+    pick which one is active.
+
+    Profile case: synthesize a virtual ``mixin_config_bot_feishu`` entry
+    and mutate ``llmcore.mykeys`` so ``load_llm_sessions`` wraps the named
+    children into a ``MixinSession``. ``MixinSession.name`` then equals
+    ``'|'.join(child.name for child in members)`` (see mixin.py:32), which
+    is what ``select_llm_by_name`` will compare against.
+    """
+    global _TARGET_LLM_NAME
+    if not _BINDING_KIND:
+        return
+    try:
+        profiles = load_profiles(PROJECT_ROOT)
+        configs = list_api_configs(PROJECT_ROOT)
+    except Exception as exc:
+        print(f"[fsapp] binding resolve failed: {exc!r} — using default LLM")
+        return
+    names = resolve_to_config_names(_BINDING_KIND, _BINDING_NAME, profiles, configs)
+    if not names:
+        return
+    if _BINDING_KIND == "config":
+        _TARGET_LLM_NAME = names[0]
+        print(f"[fsapp] binding config:{_BINDING_NAME!r} → pinned to {_TARGET_LLM_NAME!r}")
+        return
+    # profile → mixin
+    mykeys_key, mixin_cfg = synthesize_mixin_entry("feishu", names)
+    # Mutate the module-level mykeys dict. llmcore.mykeys / the `mykeys`
+    # imported above / _keys.py's globals all reference the same dict object
+    # because of the PEP-562 lazy attribute in llmcore/__init__.py — see
+    # llmcore/__init__.py:104 __getattr__.
+    llmcore.mykeys[mykeys_key] = mixin_cfg
+    _TARGET_LLM_NAME = "|".join(names)
+    print(f"[fsapp] binding profile:{_BINDING_NAME!r} → mixin chain {names} (mixin.name={_TARGET_LLM_NAME!r})")
+
+
+_apply_binding_once()
+
+
 def _resolve_extra_prompt(open_id):
     p = (USER_PROMPTS.get(open_id) or SYSTEM_PROMPT or "").strip()
     return f"\n\n# Feishu Persona\n{p}" if p else ""
@@ -378,6 +453,10 @@ def _get_agent(open_id):
             slot.last_used_ts = time.time()
             return slot.agent
         a = GeneraticAgent()
+        if _TARGET_LLM_NAME:
+            ok = a.select_llm_by_name(_TARGET_LLM_NAME)
+            if not ok:
+                print(f"[fsapp] WARN: target LLM {_TARGET_LLM_NAME!r} not in agent clients, using default llm_no={a.llm_no}")
         _apply_prompt(a, _resolve_extra_prompt(open_id))
         t = threading.Thread(target=a.run, name=f"fs-agent-{open_id[:8]}", daemon=True)
         t.start()
@@ -470,6 +549,10 @@ def _upload_image_sync(file_path):
             if response.success():
                 return response.data.image_key
             print(f"[ERROR] upload image failed: {response.code}, {response.msg}")
+            if response.code in _HARD_UPLOAD_CODES:
+                raise _UploadHardError(response.code, response.msg)
+    except _UploadHardError:
+        raise
     except Exception as e:
         print(f"[ERROR] upload image failed {file_path}: {e}")
     return None
@@ -488,6 +571,10 @@ def _upload_file_sync(file_path):
             if response.success():
                 return response.data.file_key
             print(f"[ERROR] upload file failed: {response.code}, {response.msg}")
+            if response.code in _HARD_UPLOAD_CODES:
+                raise _UploadHardError(response.code, response.msg)
+    except _UploadHardError:
+        raise
     except Exception as e:
         print(f"[ERROR] upload file failed {file_path}: {e}")
     return None
@@ -571,18 +658,39 @@ def _send_local_file(receive_id, file_path, receive_id_type="open_id"):
         send_message(receive_id, f"⚠️ {reason}: {base}", receive_id_type=receive_id_type)
         return False
     if is_image:
-        image_key = _upload_with_retry(_upload_image_sync, file_path)
+        try:
+            image_key = _upload_with_retry(_upload_image_sync, file_path)
+        except _UploadHardError as e:
+            _notify_upload_hard_error(receive_id, e, receive_id_type)
+            return False
         if image_key:
             send_message(receive_id, json.dumps({"image_key": image_key}, ensure_ascii=False), msg_type="image", receive_id_type=receive_id_type)
             return True
     else:
-        file_key = _upload_with_retry(_upload_file_sync, file_path)
+        try:
+            file_key = _upload_with_retry(_upload_file_sync, file_path)
+        except _UploadHardError as e:
+            _notify_upload_hard_error(receive_id, e, receive_id_type)
+            return False
         if file_key:
             msg_type = "media" if ext in _AUDIO_EXTS or ext in _VIDEO_EXTS else "file"
             send_message(receive_id, json.dumps({"file_key": file_key}, ensure_ascii=False), msg_type=msg_type, receive_id_type=receive_id_type)
             return True
     send_message(receive_id, f"⚠️ 上传失败（已重试 2 次）: {base}", receive_id_type=receive_id_type)
     return False
+
+
+def _notify_upload_hard_error(receive_id, err, receive_id_type):
+    """硬错误（权限/配额）每个 receive_id+code 只通知一次，避免刷屏。"""
+    key = (receive_id, err.code)
+    if key in _hard_error_notified:
+        return
+    _hard_error_notified.add(key)
+    if err.code == 99991672:
+        text = "⚠️ 文件上传失败：飞书应用缺少 im:resource:upload 权限。请管理员到开放平台「权限管理」开通后发布新版本。"
+    else:
+        text = f"⚠️ 文件上传失败（飞书 code {err.code}）：{err.msg}"
+    send_message(receive_id, text, receive_id_type=receive_id_type)
 
 
 def _send_generated_files(receive_id, raw_text, receive_id_type="open_id"):
@@ -631,11 +739,21 @@ def _fmt_tool_call(tc):
     return f"- `{name}`({json.dumps(args, ensure_ascii=False)[:200]})"
 
 
+_THINKING_LIMIT = 500
+_STRIP_THINKING_RE = re.compile(r"### 💭 Thinking\n.*?(?=### |\Z)", re.DOTALL)
+
+def _strip_thinking(detail):
+    """移除详情中的 Thinking 段落（用于旧 step 去重）。"""
+    return _STRIP_THINKING_RE.sub("", detail).strip()
+
+
 def _build_step_detail(resp, tool_calls):
     """从 LLM response + tool_calls 组装单步展开详情（纯函数）。"""
     parts = []
     thinking = (getattr(resp, 'thinking', '') or '').strip() if resp else ''
     if thinking:
+        if len(thinking) > _THINKING_LIMIT:
+            thinking = thinking[:_THINKING_LIMIT] + f"\n…(已截断,共 {len(thinking)} 字符)"
         parts.append(f"### 💭 Thinking\n{thinking}")
     if tool_calls:
         parts.append("### 🛠 Tool Calls\n" + "\n".join(_fmt_tool_call(tc) for tc in tool_calls))
@@ -651,7 +769,8 @@ class _TaskCard:
 
     def __init__(self, receive_id, rid_type):
         self.rid, self.rtype = receive_id, rid_type
-        self.steps = []          # [(summary, detail), ...]
+        self.steps = []          # 始终只存当前一步（旧 turn 不留）
+        self.turn = 0
         self.status = "🤔 思考中..."
         self.final = None
         self.msg_id = None
@@ -668,8 +787,9 @@ class _TaskCard:
 
     def _build(self):
         els = [{"tag": "markdown", "content": f"**{self.status}**"}]
-        for i, (s, d) in enumerate(self.steps, 1):
-            els.append(self._step_panel(i, s, d))
+        if self.steps:
+            s, d = self.steps[-1]
+            els.append(self._step_panel(self.turn, s, d))
         if self.final:
             els += [{"tag": "hr"}, {"tag": "markdown", "content": self.final}]
         return _card_raw(els)
@@ -687,8 +807,9 @@ class _TaskCard:
         self._push()
 
     def step(self, summary, detail=""):
-        self.steps.append((summary, detail))
-        self.status = f"⏳ 工作中 · Turn {len(self.steps)}"
+        self.turn += 1
+        self.steps = [(summary, detail)]  # 旧 turn 彻底丢弃，不保留
+        self.status = f"⏳ 工作中 · Turn {self.turn}"
         self._push()
 
     def done(self, text):

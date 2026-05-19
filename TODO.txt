@@ -1,0 +1,7 @@
+[ ] 产出 | PS/rg替代os.walk SOP落地 | R186验证完成但SOP patch未写入memory/—写patch草案报告待审批，改RULES和code_run相关SOP
+[ ] 产出 | R174+R187合并送审 | set确定性patch+file_patch错误提示增强—合并为单份审批报告附两个patch diff
+[ ] 产出 | GUI视觉回归(含vision) | R180跳过vision，本次跑runner+开启视觉比对，确认5 journey截图与baseline一致
+[ ] 产出 | ADB能力激活 | winget install Google.PlatformTools → 验证adb devices → adb_ui.py端到端测试 → 产出激活报告
+[ ] 产出 | PC便携工具深度扫描 | rg搜D:/下portable/PortableApps/等非标准路径 → 发现便携工具→产出能力扩展建议
+[ ] PM | 摩擦挖掘 | pm_friction_scan→若非节流则产出≥1条带≥3 evidence提案进pm_proposals.md
+[ ] 保鲜 | Free Pool harvest+sweep | forum_harvest→api_probe probe_candidates→sweep→产出vault状态报告

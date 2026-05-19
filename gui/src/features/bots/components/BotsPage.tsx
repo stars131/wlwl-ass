@@ -126,26 +126,33 @@ export function BotsPage(_props: BotsPageProps = {}): JSX.Element {
   );
 }
 
-import { useBots, useInstallBotSdk, useStartBot, useStopBot } from '../hooks/useBots';
+import { useBots, useInstallBotSdk, useLlmOptions, useSetBotLlmBinding, useStartBot, useStopBot } from '../hooks/useBots';
 
 interface BotsTableProps {
   onShowLog: (key: string) => void;
 }
+
+// Bot keys whose subprocess actually honors WLWL_BOT_LLM_BINDING today.
+// Mirrors _LLM_BINDING_SUPPORTED_BOTS in launcher/api_server.py — extend
+// both sets together when more frontends learn the protocol.
+const LLM_BINDABLE_BOTS = new Set(['feishu', 'feishu_concierge']);
 
 function BotsTable({ onShowLog }: BotsTableProps): JSX.Element {
   const bots = useBots();
   const start = useStartBot();
   const stop = useStopBot();
   const install = useInstallBotSdk();
+  const llmOptions = useLlmOptions();
+  const setBinding = useSetBotLlmBinding();
 
   return (
-    <div className="flex flex-col gap-4 p-4 max-w-3xl mx-auto">
+    <div className="flex flex-col gap-4 p-4 max-w-4xl mx-auto">
       <header>
         <h1 className="text-xl font-semibold">Bots</h1>
         {/* footer note: literal-string wrap so the angle-bracketed CLI hint
             doesn't get parsed as JSX (HMR-nudge after the post-mykey rewrite) */}
         <p className="text-sm text-muted-foreground">
-          {'每 3 秒刷新；🟢 本 launcher / 🟡 外部进程 / ⚪ 已停。凭据编辑请用上方 「Bot 凭据」 卡或 `python -m launcher.config set bots.<bot>.<field> ...`。'}
+          {'每 3 秒刷新；🟢 本 launcher / 🟢 外部进程已接管 / 🟡 孤儿无法识别 / ⚪ 已停。凭据编辑请用上方 「Bot 凭据」 卡或 `python -m launcher.config set bots.<bot>.<field> ...`。'}
         </p>
       </header>
 
@@ -160,6 +167,7 @@ function BotsTable({ onShowLog }: BotsTableProps): JSX.Element {
             <tr className="text-left border-b border-border">
               <th className="py-2 px-2">Bot</th>
               <th className="py-2 px-2">配置</th>
+              <th className="py-2 px-2">LLM</th>
               <th className="py-2 px-2">状态</th>
               <th className="py-2 px-2 text-right">操作</th>
             </tr>
@@ -175,12 +183,27 @@ function BotsTable({ onShowLog }: BotsTableProps): JSX.Element {
                 cfgText = '⚠️';
                 cfgTip = '缺 SDK: ' + bot.missing_modules.join(', ');
               }
+              const adopted = bot.running_external && bot.lock_holder_pid != null;
               const stateText = bot.running_self
                 ? '🟢 运行中（本 launcher）'
-                : bot.running_external
-                  ? '🟡 外部进程占端口'
-                  : '⚪ 已停';
+                : adopted
+                  ? `🟢 运行中（已接管 pid=${bot.lock_holder_pid}）`
+                  : bot.running_external
+                    ? '🟡 孤儿进程占端口（无法识别 PID）'
+                    : '⚪ 已停';
               const startable = bot.configured && bot.sdk_installed && !bot.running;
+              const bindable = LLM_BINDABLE_BOTS.has(bot.key);
+              // Detect a stale binding (e.g. profile renamed / config deleted)
+              // so the dropdown can flag it visibly.
+              const bindKind = bot.llm_binding.split(':')[0] ?? '';
+              const bindName = bot.llm_binding.split(':')[1] ?? '';
+              const knownConfigs = llmOptions.data?.configs ?? [];
+              const knownProfiles = llmOptions.data?.profiles ?? [];
+              const isStale =
+                bindable && bot.llm_binding !== '' && !(
+                  (bindKind === 'config' && knownConfigs.some((c) => c.name === bindName)) ||
+                  (bindKind === 'profile' && knownProfiles.some((p) => p.name === bindName))
+                );
               return (
                 <tr key={bot.key} className="border-b border-border last:border-0">
                   <td className="py-2 px-2">
@@ -188,6 +211,50 @@ function BotsTable({ onShowLog }: BotsTableProps): JSX.Element {
                     <div className="text-xs text-muted-foreground">{bot.key}</div>
                   </td>
                   <td className="py-2 px-2" title={cfgTip}>{cfgText}</td>
+                  <td className="py-2 px-2">
+                    {bindable ? (
+                      <div className="flex flex-col gap-0.5">
+                        <select
+                          className="text-xs px-1 py-0.5 rounded border border-border bg-background"
+                          value={bot.llm_binding}
+                          disabled={setBinding.isPending}
+                          onChange={(e) =>
+                            setBinding.mutate({ key: bot.key, binding: e.target.value })
+                          }
+                        >
+                          <option value="">（默认 / 首条 config）</option>
+                          {isStale ? (
+                            <option value={bot.llm_binding}>
+                              ⚠️ {bot.llm_binding}（已失效）
+                            </option>
+                          ) : null}
+                          {knownProfiles.length > 0 ? (
+                            <optgroup label="Profile（fallback chain）">
+                              {knownProfiles.map((p) => (
+                                <option key={`p-${p.name}`} value={`profile:${p.name}`}>
+                                  profile:{p.name}（{p.members.join(' → ') || '空'}）
+                                </option>
+                              ))}
+                            </optgroup>
+                          ) : null}
+                          {knownConfigs.length > 0 ? (
+                            <optgroup label="单个 Config">
+                              {knownConfigs.map((c) => (
+                                <option key={`c-${c.name}`} value={`config:${c.name}`}>
+                                  config:{c.name}
+                                </option>
+                              ))}
+                            </optgroup>
+                          ) : null}
+                        </select>
+                        {bot.running && bot.llm_binding ? (
+                          <span className="text-[10px] text-amber-600">改后重启生效</span>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
+                  </td>
                   <td className="py-2 px-2">{stateText}</td>
                   <td className="py-2 px-2 text-right">
                     <div className="inline-flex gap-1">
@@ -215,7 +282,7 @@ function BotsTable({ onShowLog }: BotsTableProps): JSX.Element {
                       <button
                         type="button"
                         onClick={() => stop.mutate(bot.key)}
-                        disabled={!bot.running_self || stop.isPending}
+                        disabled={!(bot.running_self || adopted) || stop.isPending}
                         className="px-2 py-0.5 text-xs rounded border border-border hover:bg-accent disabled:opacity-40"
                       >
                         停止
@@ -247,6 +314,16 @@ function BotsTable({ onShowLog }: BotsTableProps): JSX.Element {
           {install.data.ok
             ? `✅ 已安装：${install.data.packages?.join(', ')}`
             : `❌ 安装失败 (returncode=${install.data.returncode}) — 详见 ${install.data.log_path}`}
+        </p>
+      ) : null}
+      {setBinding.isError ? (
+        <p className="text-xs text-destructive">LLM 绑定保存失败：{String(setBinding.error)}</p>
+      ) : null}
+      {setBinding.data ? (
+        <p className="text-xs text-emerald-600">
+          ✅ {setBinding.data.key} 绑定已保存
+          {setBinding.data.binding ? ` (${setBinding.data.binding})` : ''}
+          {setBinding.data.restart_required ? '；重启 bot 生效' : ''}
         </p>
       ) : null}
     </div>

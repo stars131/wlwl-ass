@@ -7,7 +7,7 @@ for the one-shot upgrade path.)
 
 **Layers (highest priority → lowest)**
 
-  1. **Process env vars**    – ``GA_*`` / ``OPENAI_API_KEY`` / etc. (read-only).
+  1. **Process env vars**    – ``WLWL_*`` / ``OPENAI_API_KEY`` / etc. (read-only).
   2. **Project store**       – ``<project>/.wlwl-ass/config.json`` (gitignored).
   3. **User store**          – ``~/.wlwl-ass/config.json`` (cross-project secrets).
   4. **.env**                – dotenv path, parsed by ``launcher.dotenv_shim``.
@@ -24,6 +24,11 @@ Each layer is a flat JSON file with this **schema**::
       "bots": {                     # IM bot credentials
         "telegram": {"bot_token": "...", "allowed_users": [...]},
         "feishu":   {"app_id": "...", "app_secret": "...", "allowed_users": [...]},
+        "feishu_concierge": {       # ADR-0011 concierge bot (friend-facing)
+          "app_id": "...", "app_secret": "...",
+          "allowed_friends": [...], "owner_open_id_on_owner_app": "...",
+          "persona": "...", "working_hours": {...}, "topics_allowed": [...]
+        },
         "qq":       {"app_id": "...", "app_secret": "..."},
         ...
       },
@@ -519,6 +524,8 @@ class ConfigStore:
         for bot_name, key_pairs in [
             ("telegram",  [("TG_BOT_TOKEN", "bot_token")]),
             ("feishu",    [("FS_APP_ID", "app_id"), ("FS_APP_SECRET", "app_secret")]),
+            ("feishu_concierge", [("FS_CONCIERGE_APP_ID", "app_id"),
+                                  ("FS_CONCIERGE_APP_SECRET", "app_secret")]),
             ("qq",        [("QQ_APP_ID", "app_id"), ("QQ_APP_SECRET", "app_secret")]),
             ("wecom",     [("WECOM_BOT_ID", "bot_id"), ("WECOM_SECRET", "secret")]),
             ("dingtalk",  [("DINGTALK_CLIENT_ID", "client_id"),
@@ -625,6 +632,34 @@ def synthesize_mykeys_from_store(store: ConfigStore | None = None) -> dict[str, 
                       ("allowed_users", "fs_allowed_users"),
                       ("system_prompt", "fs_system_prompt"),
                       ("user_prompts", "fs_user_prompts")],
+        "feishu_concierge": [
+            ("app_id",                     "fs_concierge_app_id"),
+            ("app_secret",                 "fs_concierge_app_secret"),
+            ("allowed_friends",            "fs_concierge_allowed_friends"),
+            ("owner_open_id_on_owner_app", "fs_concierge_owner_open_id"),
+            ("owner_open_id_on_concierge_app", "fs_concierge_owner_open_id_on_concierge"),
+            ("persona",                    "fs_concierge_persona"),
+            # Phase 4 (2026-05-18): structured persona fields. Each
+            # optional; ConciergeAgent uses curated defaults when unset.
+            ("bot_identity",               "fs_concierge_bot_identity"),
+            ("bot_project_summary",        "fs_concierge_bot_project_summary"),
+            ("bot_capability_summary",     "fs_concierge_bot_capability_summary"),
+            ("bot_style_guidelines",       "fs_concierge_bot_style_guidelines"),
+            ("bot_extra_instructions",     "fs_concierge_bot_extra_instructions"),
+            ("working_hours",              "fs_concierge_working_hours"),
+            ("topics_allowed",             "fs_concierge_topics_allowed"),
+            ("meeting_buffer_min",         "fs_concierge_meeting_buffer_min"),
+            ("default_meeting_minutes",    "fs_concierge_default_meeting_minutes"),
+            ("rate_limit_per_friend",      "fs_concierge_rate_limit_per_friend"),
+            ("rate_limit_global",          "fs_concierge_rate_limit_global"),
+            ("kb_path",                    "fs_concierge_kb_path"),
+            ("audit_path",                 "fs_concierge_audit_path"),
+            ("escalation_log_path",        "fs_concierge_escalation_log_path"),
+            ("retention_days",             "fs_concierge_retention_days"),
+            ("exit_phrase",                "fs_concierge_exit_phrase"),
+            ("out_of_scope_reply",         "fs_concierge_out_of_scope_reply"),
+            ("llm_enabled",                "fs_concierge_llm_enabled"),
+        ],
         "qq":        [("app_id", "qq_app_id"),
                       ("app_secret", "qq_app_secret")],
         "wecom":     [("bot_id", "wecom_bot_id"),

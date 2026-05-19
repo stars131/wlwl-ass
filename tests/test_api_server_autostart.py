@@ -4,8 +4,8 @@ Verifies the two startup behaviors that replace the old per-launcher bot/sched
 flag handling (previously in launcher/qt_launcher.py and launch.pyw):
 
   * _auto_start_configured_bots: starts any bot whose credentials AND SDK are
-    present, skips bots already running (own or external), skips
-    not-configured / sdk-missing bots.
+    present; adopts external orphans with discoverable PID; skips
+    truly unmanageable orphans; skips not-configured / sdk-missing bots.
   * _auto_start_scheduler: spawns reflect/scheduler.py only when
     launch_options.scheduler == True; no spawn otherwise.
 
@@ -29,7 +29,13 @@ sys.path.insert(0, os.path.dirname(HERE))
 class _FakeStatus:
     configured: bool = False
     sdk_installed: bool = False
-    running: bool = False
+    running_self: bool = False
+    running_external: bool = False
+    lock_holder_pid: int | None = None
+
+    @property
+    def running(self) -> bool:
+        return self.running_self or self.running_external
 
 
 class _FakeBotManager:
@@ -46,12 +52,13 @@ class _FakeBotManager:
     def start(self, key: str):
         self.started.append(key)
         # Flip the in-memory status so a second call would skip it
-        self._statuses[key].running = True
+        self._statuses[key].running_self = True
         return True, f"started:{key}"
 
     def stop_all(self):
         for st in self._statuses.values():
-            st.running = False
+            st.running_self = False
+            st.running_external = False
 
 
 # ── _auto_start_configured_bots ─────────────────────────────────────────
@@ -64,7 +71,7 @@ def test_autostart_only_starts_configured_and_sdk_ready_bots(monkeypatch):
         "feishu": _FakeStatus(configured=True, sdk_installed=True),       # ✅ start
         "tg":     _FakeStatus(configured=True, sdk_installed=False),       # ❌ sdk missing
         "qq":     _FakeStatus(configured=False, sdk_installed=True),       # ❌ no creds
-        "wecom":  _FakeStatus(configured=True, sdk_installed=True, running=True),  # ❌ already up
+        "wecom":  _FakeStatus(configured=True, sdk_installed=True, running_self=True),  # ❌ already up
     })
     monkeypatch.setattr(api_server, "_bot_manager", fake)
     monkeypatch.setattr(api_server, "_bm", lambda: fake)
@@ -90,13 +97,55 @@ def test_autostart_skips_already_running_bot(monkeypatch):
     from launcher import api_server
 
     fake = _FakeBotManager({
-        "feishu": _FakeStatus(configured=True, sdk_installed=True, running=True),
+        "feishu": _FakeStatus(configured=True, sdk_installed=True, running_self=True),
     })
     monkeypatch.setattr(api_server, "_bot_manager", fake)
     monkeypatch.setattr(api_server, "_bm", lambda: fake)
 
     api_server._auto_start_configured_bots()
     assert fake.started == []
+
+
+def test_autostart_adopts_external_orphan_with_known_pid(monkeypatch):
+    """When a bot is external (running_external=True) AND a PID is
+    discoverable, auto-start MUST call start() so the adoption path runs.
+
+    Without this, a fsapp.py from a previous api_server lifetime stays
+    "external" forever and the GUI shows yellow with no way to manage it."""
+    from launcher import api_server
+
+    fake = _FakeBotManager({
+        "feishu": _FakeStatus(
+            configured=True, sdk_installed=True,
+            running_external=True, lock_holder_pid=40952,
+        ),
+    })
+    monkeypatch.setattr(api_server, "_bot_manager", fake)
+    monkeypatch.setattr(api_server, "_bm", lambda: fake)
+
+    api_server._auto_start_configured_bots()
+    assert fake.started == ["feishu"]
+
+
+def test_autostart_skips_orphan_with_unknown_pid(monkeypatch, capsys):
+    """When a bot is external but no PID was discovered, we can't manage it.
+    Don't call start() — it would error out — but log a hint."""
+    from launcher import api_server
+
+    fake = _FakeBotManager({
+        "feishu": _FakeStatus(
+            configured=True, sdk_installed=True,
+            running_external=True, lock_holder_pid=None,
+        ),
+    })
+    monkeypatch.setattr(api_server, "_bot_manager", fake)
+    monkeypatch.setattr(api_server, "_bm", lambda: fake)
+
+    api_server._auto_start_configured_bots()
+    assert fake.started == []
+    captured = capsys.readouterr().out
+    assert "external orphan" in captured.lower()
+    assert "restart" in captured.lower()
 
 
 def test_autostart_skips_wechat_by_default(monkeypatch):
@@ -178,7 +227,7 @@ class _DummyProc:
 def test_shutdown_children_is_idempotent(monkeypatch):
     from launcher import api_server
 
-    fake = _FakeBotManager({"feishu": _FakeStatus(running=True)})
+    fake = _FakeBotManager({"feishu": _FakeStatus(running_self=True)})
     monkeypatch.setattr(api_server, "_bot_manager", fake)
     api_server._scheduler_proc = _DummyProc()
 

@@ -26,12 +26,24 @@ export function ConfigEditor({ config, allConfigs, onClose }: ConfigEditorProps)
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<LlmTestResult | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState<boolean>(false);
 
   useEffect(() => {
     setDraft(config ?? { kind: 'native_oai', name: '', apibase: '', apikey: '', model: '' });
     setApikeyDirty(config === null);
     setTestResult(null);
     setTestError(null);
+    setAdvancedOpen(
+      config != null
+        && (
+          config.temperature != null
+          || config.reasoning_effort
+          || config.thinking_type
+          || config.thinking_budget_tokens != null
+          || config.max_tokens != null
+          || config.api_mode
+        ),
+    );
   }, [config]);
 
   const isEditing = config !== null;
@@ -183,6 +195,208 @@ export function ConfigEditor({ config, allConfigs, onClose }: ConfigEditorProps)
                 <span title="工具 image_generate 会优先选这条">image_capable</span>
               </label>
             </fieldset>
+
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((v) => !v)}
+                className="text-xs text-muted-foreground hover:text-foreground"
+              >
+                {advancedOpen ? '▾' : '▸'} 高级（推理 / 性能 / 超时）
+              </button>
+            </div>
+            {advancedOpen ? (
+              <div className="space-y-3 rounded-md border border-border/60 bg-card/30 p-3">
+                <Field label="api_mode（OpenAI 系：Responses 还是 Chat Completions）">
+                  <select
+                    value={typeof draft.api_mode === 'string' ? draft.api_mode : ''}
+                    onChange={(e) => onChange('api_mode', e.target.value || undefined)}
+                    className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm"
+                  >
+                    <option value="">默认（chat_completions）</option>
+                    <option value="chat_completions">chat_completions</option>
+                    <option value="responses">responses</option>
+                  </select>
+                </Field>
+
+                <Field label="reasoning_effort（OpenAI 思考程度 / Claude effort）">
+                  <select
+                    value={typeof draft.reasoning_effort === 'string' ? draft.reasoning_effort : ''}
+                    onChange={(e) => onChange('reasoning_effort', e.target.value || undefined)}
+                    className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm"
+                  >
+                    <option value="">默认（不指定）</option>
+                    <option value="none">none</option>
+                    <option value="minimal">minimal</option>
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                    <option value="xhigh">xhigh（Claude 视为 max）</option>
+                  </select>
+                </Field>
+
+                <Field label="thinking_type（Claude 思考开关）">
+                  <select
+                    value={typeof draft.thinking_type === 'string' ? draft.thinking_type : ''}
+                    onChange={(e) => onChange('thinking_type', e.target.value || undefined)}
+                    className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm"
+                  >
+                    <option value="">默认（不指定）</option>
+                    <option value="adaptive">adaptive</option>
+                    <option value="enabled">enabled（需配 budget_tokens）</option>
+                    <option value="disabled">disabled</option>
+                  </select>
+                </Field>
+
+                <Field label="thinking_budget_tokens（Claude thinking=enabled 时必填）">
+                  <input
+                    type="number"
+                    min={0}
+                    step={256}
+                    value={
+                      typeof draft.thinking_budget_tokens === 'number'
+                        ? draft.thinking_budget_tokens
+                        : (draft.thinking_budget_tokens ?? '')
+                    }
+                    onChange={(e) =>
+                      onChange(
+                        'thinking_budget_tokens',
+                        e.target.value === '' ? undefined : Number(e.target.value),
+                      )
+                    }
+                    className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm"
+                    placeholder="例如 4096"
+                  />
+                </Field>
+
+                <Field label="temperature（0~2；Kimi/Moonshot/MiniMax 自动夹到 (0,1]）">
+                  <input
+                    type="number"
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    value={
+                      typeof draft.temperature === 'number'
+                        ? draft.temperature
+                        : (draft.temperature ?? '')
+                    }
+                    onChange={(e) =>
+                      onChange(
+                        'temperature',
+                        e.target.value === '' ? undefined : Number(e.target.value),
+                      )
+                    }
+                    className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm"
+                    placeholder="默认 1"
+                  />
+                </Field>
+
+                <Field label="max_tokens（一次响应最多生成多少 token）">
+                  <input
+                    type="number"
+                    min={0}
+                    step={256}
+                    value={
+                      typeof draft.max_tokens === 'number'
+                        ? draft.max_tokens
+                        : (draft.max_tokens ?? '')
+                    }
+                    onChange={(e) =>
+                      onChange(
+                        'max_tokens',
+                        e.target.value === '' ? undefined : Number(e.target.value),
+                      )
+                    }
+                    className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm"
+                    placeholder="留空 = 走 provider 默认"
+                  />
+                </Field>
+
+                <fieldset className="flex flex-wrap gap-4 pt-1">
+                  <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={draft.stream !== false}
+                      onChange={(e) => onChange('stream', e.target.checked)}
+                      className="rounded border-border"
+                    />
+                    <span title="启用流式响应（默认）">stream</span>
+                  </label>
+                  <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(draft.fake_cc_system_prompt)}
+                      onChange={(e) => onChange('fake_cc_system_prompt', e.target.checked)}
+                      className="rounded border-border"
+                    />
+                    <span title="某些反代要求伪装为 Claude Code 系统提示">fake_cc_system_prompt</span>
+                  </label>
+                </fieldset>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <Field label="max_retries">
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={
+                        typeof draft.max_retries === 'number'
+                          ? draft.max_retries
+                          : (draft.max_retries ?? '')
+                      }
+                      onChange={(e) =>
+                        onChange(
+                          'max_retries',
+                          e.target.value === '' ? undefined : Number(e.target.value),
+                        )
+                      }
+                      className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm"
+                      placeholder="1"
+                    />
+                  </Field>
+                  <Field label="connect_timeout(s)">
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={
+                        typeof draft.connect_timeout === 'number'
+                          ? draft.connect_timeout
+                          : (draft.connect_timeout ?? '')
+                      }
+                      onChange={(e) =>
+                        onChange(
+                          'connect_timeout',
+                          e.target.value === '' ? undefined : Number(e.target.value),
+                        )
+                      }
+                      className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm"
+                      placeholder="默认 5/10"
+                    />
+                  </Field>
+                  <Field label="read_timeout(s)">
+                    <input
+                      type="number"
+                      min={5}
+                      step={5}
+                      value={
+                        typeof draft.read_timeout === 'number'
+                          ? draft.read_timeout
+                          : (draft.read_timeout ?? '')
+                      }
+                      onChange={(e) =>
+                        onChange(
+                          'read_timeout',
+                          e.target.value === '' ? undefined : Number(e.target.value),
+                        )
+                      }
+                      className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm"
+                      placeholder="默认 30/240"
+                    />
+                  </Field>
+                </div>
+              </div>
+            ) : null}
           </>
         ) : (
           <Field label="llm_nos（mixin 成员名，逗号分隔）">

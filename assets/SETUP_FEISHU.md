@@ -343,6 +343,10 @@ python -m launcher.config set bots.feishu.system_prompt "回复必须以 [PROMPT
 - 自定义 Agent 行为：编辑 `assets/sys_prompt.txt`
 - 添加新工具：编辑 `assets/tools_schema.json`
 - 查看日志：运行时观察终端输出
+- **想让朋友也能跟你的助理聊天（但不给他们 `code_run` 权限）？**
+  见 [`docs/specs/feishu-concierge-bot.md`](../docs/specs/feishu-concierge-bot.md)
+  与 [`docs/adr/0011-feishu-concierge-bot.md`](../docs/adr/0011-feishu-concierge-bot.md)
+  —— 第二个飞书 app + 受限 agent（"小秘书"）的完整设计与实施分阶段计划。
 
 ---
 

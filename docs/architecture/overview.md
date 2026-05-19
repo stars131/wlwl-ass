@@ -22,10 +22,10 @@ choices read the [ADRs](../adr/README.md). For day-to-day commands read
 │  │  └──────────┘  │         │   │ launch_options (settings)│ │  │
 │  └────────────────┘         │   └──────────────────────────┘ │  │
 │                             │                                  │  │
-│                             │   spawn streamlit/bot subprocs   │  │
+│                             │   spawn bot subprocesses         │  │
 │                             │      ┌─────────────────────┐     │  │
-│                             └────▶ │ frontends/stapp.py  │     │  │
-│                                    │ frontends/fsapp.py  │     │  │
+│                             └────▶ │ frontends/fsapp.py  │     │  │
+│                                    │ frontends/tgapp.py  │     │  │
 │                                    │ ...                 │     │  │
 │                                    └─────────────────────┘     │  │
 │                                              │                  │  │
@@ -46,7 +46,6 @@ choices read the [ADRs](../adr/README.md). For day-to-day commands read
 |---|---|---|
 | **Tauri shell** | Rust process, hosts WebView + IPC | App lifetime |
 | **api_server** | Python HTTP server, business logic facade | Spawned by Tauri; killed on app exit |
-| **Streamlit subprocesses** | One per session (project) | Owned by ProjectManager |
 | **Bot subprocesses** | One per enabled bot (Telegram, Feishu, …) | Owned by BotManager |
 | **L4 scheduler** | Background reflect loop | Spawned by api_server when settings.scheduler=true |
 
@@ -88,8 +87,8 @@ folder convention.
 `agentmain.py`, `wlwl_ass.py`, `agent_loop.py`)
 
 **Untouched by Phase 0.** The new GUI is a new caller of these modules; it
-does not replace them. The CLI entry point `python agentmain.py` and the
-legacy webview shell `python launch.pyw --legacy-shell` continue to work.
+does not replace them. The CLI entry point `wlwl` (see `launcher/cli_repl.py`)
+and `python agentmain.py` continue to work for headless / scripted use.
 
 ## Testing pyramid
 

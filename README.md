@@ -163,7 +163,7 @@ configured — you don't run them by hand.
 
 ### Common Chat Commands
 
-The default Streamlit desktop UI started by `python launch.pyw`, plus the QQ / Telegram / Feishu / WeCom / DingTalk / WeChat frontends, support these chat commands:
+The default Tauri + React desktop GUI started by `python launch.pyw`, plus the QQ / Telegram / Feishu / WeCom / DingTalk / WeChat frontends, support these chat commands:
 
 - `/new` - start a fresh conversation and clear the current context
 - `/continue` - list recoverable conversation snapshots
@@ -392,8 +392,8 @@ python launch.pyw
 
 ```bash
 pip install pycryptodome qrcode requests
-python launch.pyw --wechat       # 集成到主启动器
-# 或单独启动
+# 通过 GUI 的 Bots tab 配置个人微信凭据后，api_server 会自动拉起；
+# 或手动单独启动：
 python frontends/wechatapp.py
 ```
 
@@ -477,7 +477,7 @@ Tauri GUI 是唯一桌面入口——以前的 `qtapp.py` / `stapp.py` / `deskto
 
 ### 通用聊天命令
 
-默认通过 `python launch.pyw` 启动的 Streamlit 桌面 UI，以及 QQ / Telegram / 飞书 / 企业微信 / 钉钉 / 微信前端，都支持以下命令：
+默认通过 `python launch.pyw` 启动的 Tauri + React 桌面 GUI，以及 QQ / Telegram / 飞书 / 企业微信 / 钉钉 / 微信前端，都支持以下命令：
 
 - `/new` - 开启新对话并清空当前上下文
 - `/continue` - 列出可恢复会话快照

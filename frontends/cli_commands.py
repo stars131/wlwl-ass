@@ -31,6 +31,7 @@ HELP_COMMANDS = (
     ("/trajectory", "列出已完成的 agent runs"),
     ("/curator", "查看待审 curator proposals"),
     ("/mcp", "列出已配置 MCP servers"),
+    ("/config", "API 配置管理(list/presets/use/preset/import/backups)"),
 )
 
 
@@ -109,6 +110,8 @@ class SharedCommandHandler:
             return CommandResult(True, self._curator())
         if op == "/mcp":
             return CommandResult(True, self._mcp(parts[1:]))
+        if op == "/config":
+            return CommandResult(True, self._config(parts[1:]))
         if op == "/new":
             return CommandResult(True, reset_conversation(self.agent))
         if op == "/restore":
@@ -296,6 +299,59 @@ class SharedCommandHandler:
                 f"({e.get('kind', 'proc')}) {cmd}"
             )
         return "\n".join(lines)
+
+    def _config(self, args) -> str:
+        """In-REPL `/config <sub> [args...]` — delegates to
+        :mod:`launcher.cli_config`, capturing its stdout/stderr so the
+        chat surface gets one string back.
+
+        Why capture instead of letting it print directly? The REPL hands
+        the agent a "done" payload, then redraws the prompt; if subcommand
+        output went to raw stdout, it would race with the prompt redraw
+        and look interleaved. Capturing keeps the slash command tidy."""
+        import io
+        import contextlib
+        try:
+            from launcher import cli_config
+        except Exception as exc:
+            return f"❌ /config 加载失败: {exc}"
+
+        # Sub-action defaults to `list` so plain `/config` is useful.
+        if not args:
+            args = ["list"]
+        sub_cmd = (args[0] or "").lower()
+        VALID = {"list", "presets", "add", "use", "remove", "import",
+                 "export", "probe", "backups"}
+        if sub_cmd not in VALID:
+            return ("用法: /config <list|presets|use NAME|preset>\n"
+                    "  /config list                  installed configs\n"
+                    "  /config presets [QUERY]       browse preset library\n"
+                    "  /config use NAME              make NAME default\n"
+                    "  /config remove NAME           delete config\n"
+                    "  /config import URL            wlwl-config:// import\n"
+                    "  /config backups               list rotated snapshots\n"
+                    "  /config probe NAME            measure apibase latency\n"
+                    "(`add` / `export` 需要交互式输入 apikey，请用终端 `wlwl config ...` 而不是 /config。)")
+
+        parser = __import__("argparse").ArgumentParser(prog="/config")
+        sub = parser.add_subparsers(dest="root")
+        cli_config.build_subparser(sub)
+
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                # argparse needs the leading "config" word to enter the
+                # config subparser tree.
+                ns = parser.parse_args(["config"] + list(args))
+                rc = ns.func(ns)
+        except SystemExit as exc:
+            return f"❌ /config 参数错误: rc={exc.code}\n{buf.getvalue()}"
+        except Exception as exc:
+            return f"❌ /config 执行失败: {exc}\n{buf.getvalue()}"
+        out = buf.getvalue().strip()
+        if rc and rc != 0:
+            return f"❌ /config 返回 rc={rc}\n{out}"
+        return out or "(no output)"
 
     def _approval(self) -> str:
         try:

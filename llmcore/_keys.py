@@ -4,7 +4,7 @@
 **Sources, low → high priority (later wins on key collision):**
 
   1. Shell env vars + ``.env`` (``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY``
-     and ``GA_*`` alternates, parsed by :mod:`launcher.dotenv_shim`).
+     and ``WLWL_*`` alternates, parsed by :mod:`launcher.dotenv_shim`).
      This is the fastest first-run path: drop one line in ``.env`` and go.
   2. :mod:`launcher.config_store` — the canonical hierarchical store
      (``~/.wlwl-ass/config.json`` user layer + ``<project>/.wlwl-ass/config.json``

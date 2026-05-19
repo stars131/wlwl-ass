@@ -6,6 +6,12 @@ tmp/
 pytest-cache-files-*/
 .pytest-tmp/
 
+# Stray temp Python probes at the root (e.g. tmpXXXXXX.ai.py from
+# debugging sessions). These often carry hard-coded API keys — never
+# commit them. Rename to scripts/<purpose>.py if a real keeper.
+/tmp*.py
+/tmp*.ai.py
+
 # Journey runner per-run output (baselines/ is committed; runs/ is ephemeral)
 tests/journeys/runs/
 

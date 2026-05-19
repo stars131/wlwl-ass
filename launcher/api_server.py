@@ -433,6 +433,13 @@ _BOT_CRED_FIELDS = {
     "tg": ["tg_bot_token", "tg_allowed_users"],
     "qq": ["qq_app_id", "qq_app_secret", "qq_allowed_users"],
     "feishu": ["fs_app_id", "fs_app_secret", "fs_allowed_users"],
+    "feishu_concierge": [
+        "fs_concierge_app_id",
+        "fs_concierge_app_secret",
+        "fs_concierge_allowed_friends",
+        "fs_concierge_owner_open_id",
+        "fs_concierge_owner_open_id_on_concierge",
+    ],
     "wecom": ["wecom_bot_id", "wecom_secret", "wecom_allowed_users", "wecom_welcome_message"],
     "dingtalk": ["dingtalk_client_id", "dingtalk_client_secret", "dingtalk_allowed_users"],
 }
@@ -450,6 +457,11 @@ _FIELD_TO_STORE: dict[str, tuple[str, str]] = {
     "fs_app_id":               ("feishu",   "app_id"),
     "fs_app_secret":           ("feishu",   "app_secret"),
     "fs_allowed_users":        ("feishu",   "allowed_users"),
+    "fs_concierge_app_id":                       ("feishu_concierge", "app_id"),
+    "fs_concierge_app_secret":                   ("feishu_concierge", "app_secret"),
+    "fs_concierge_allowed_friends":              ("feishu_concierge", "allowed_friends"),
+    "fs_concierge_owner_open_id":                ("feishu_concierge", "owner_open_id_on_owner_app"),
+    "fs_concierge_owner_open_id_on_concierge":   ("feishu_concierge", "owner_open_id_on_concierge_app"),
     "wecom_bot_id":            ("wecom",    "bot_id"),
     "wecom_secret":            ("wecom",    "secret"),
     "wecom_allowed_users":     ("wecom",    "allowed_users"),
@@ -567,7 +579,9 @@ def _route_credentials_put(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
 def _route_bots_list(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     from launcher.bot_manager import BOT_SPECS
+    from launcher.config_store import default_store
 
+    store = default_store()
     statuses = _bm().status_all()
     rows = []
     for key, spec in BOT_SPECS.items():
@@ -583,10 +597,75 @@ def _route_bots_list(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             "running_self": st.running_self,
             "running_external": st.running_external,
             "running": st.running,
+            "lock_holder_pid": st.lock_holder_pid,
             "auto_start": spec.auto_start,
             "log_path": st.log_path,
+            "llm_binding": str(store.get_bot(key).get("llm_binding") or ""),
         })
     return 200, {"bots": rows}
+
+
+# Keys whose subprocess actually honors WLWL_BOT_LLM_BINDING (see
+# frontends/fsapp.py + fsapp_concierge.py). Other bots accept the field on
+# write so the GUI dropdown can show a value, but the field has no runtime
+# effect there yet — extend this set when more frontends learn the protocol.
+_LLM_BINDING_SUPPORTED_BOTS = frozenset({"feishu", "feishu_concierge"})
+
+
+def _route_bot_llm_options(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """GET /api/bots/llm_options — return the two-axis picker source for the
+    Bots-tab dropdown: every non-mixin config (single-pin candidates) plus
+    every profile (fallback-chain candidates)."""
+    from launcher.api_config import list_api_configs
+    from launcher.profiles import load_profiles
+
+    root = _project_root()
+    configs = [
+        {"name": str(c.get("name") or ""), "var_name": c.get("var_name", ""),
+         "kind": str(c.get("kind") or "")}
+        for c in list_api_configs(root)
+        if str(c.get("kind") or "") != "mixin" and (c.get("name") or "")
+    ]
+    state = load_profiles(root)
+    profiles = [
+        {"name": pn, "members": list(members)}
+        for pn, members in (state.get("profiles") or {}).items()
+    ]
+    return 200, {"configs": configs, "profiles": profiles}
+
+
+def _route_bot_set_llm(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """PATCH /api/bots/<key>/llm — set the per-bot LLM binding.
+
+    Body: ``{"binding": "" | "config:<name>" | "profile:<name>"}``.
+    Empty string clears the binding (revert to default behaviour). Returns
+    ``restart_required: true`` when the bot is currently running so the GUI
+    can surface that to the user."""
+    from launcher.bot_manager import BOT_SPECS
+    from launcher.config_store import default_store
+    from launcher.llm_binding import parse_binding
+
+    key = req["params"]["key"]
+    if key not in BOT_SPECS:
+        return 404, {"error": "unknown_bot", "key": key}
+    if key not in _LLM_BINDING_SUPPORTED_BOTS:
+        return 400, {
+            "error": "binding_not_supported_for_bot",
+            "key": key,
+            "supported": sorted(_LLM_BINDING_SUPPORTED_BOTS),
+        }
+    binding = str((req.get("body") or {}).get("binding") or "").strip()
+    if binding:
+        kind, name = parse_binding(binding)
+        if not kind:
+            return 400, {"error": "invalid_binding_syntax",
+                         "detail": "must be empty, 'config:<name>', or 'profile:<name>'"}
+    default_store().set_bot(key, {"llm_binding": binding}, merge=True)
+    return 200, {
+        "key": key,
+        "binding": binding,
+        "restart_required": _bm().status(key).running,
+    }
 
 
 def _route_bot_start(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -610,6 +689,25 @@ def _route_bot_stop(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     ok, message = _bm().stop(key)
     if not ok:
         return 500, {"error": "stop_failed", "key": key, "message": message}
+    return 200, {"key": key, "message": message}
+
+
+def _route_bot_restart(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """POST /api/bots/<key>/restart — stop (including external orphans) + start.
+
+    Use case: an fsapp.py / qqapp.py subprocess from a previous api_server
+    lifetime still holds its singleton lock port, but the current
+    BotManager doesn't track it. A plain start() can't spawn a duplicate;
+    restart kills the orphan via its PID, waits for the port to release,
+    then starts a fresh subprocess this BotManager owns."""
+    from launcher.bot_manager import BOT_SPECS
+
+    key = req["params"]["key"]
+    if key not in BOT_SPECS:
+        return 404, {"error": "unknown_bot", "key": key}
+    ok, message = _bm().restart(key)
+    if not ok:
+        return 409, {"error": "restart_failed", "key": key, "message": message}
     return 200, {"key": key, "message": message}
 
 
@@ -879,6 +977,15 @@ def _route_cost_summary(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     total_usd = 0.0
     by_model: dict[str, float] = defaultdict(float)
     by_source: dict[str, float] = defaultdict(float)
+    by_day_usd: dict[str, float] = defaultdict(float)
+    tok_total = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
+    tok_today = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
+    by_model_tokens: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0, "calls": 0}
+    )
+    by_day_tokens: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0, "calls": 0}
+    )
     anomalies: list[dict[str, Any]] = []
     row_count = 0
 
@@ -897,6 +1004,11 @@ def _route_cost_summary(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             "row_count": 0,
             "top_models": [],
             "top_sources": [],
+            "tokens_total": tok_total,
+            "tokens_today": tok_today,
+            "by_model_tokens": [],
+            "by_day_usd": [],
+            "by_day_tokens": [],
             "anomalies": [],
             "thresholds": {
                 "single_row_usd": COST_ANOMALY_SINGLE_ROW_USD,
@@ -918,12 +1030,38 @@ def _route_cost_summary(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
                 ts = str(row.get("ts") or "")
                 model = str(row.get("model") or "(unknown)")
                 source = str(row.get("source") or "agent")
+                in_t = int(row.get("input") or 0)
+                out_t = int(row.get("output") or 0)
+                cc_t = int(row.get("cache_creation") or 0)
+                cr_t = int(row.get("cache_read") or 0)
+                day = ts[:10] if len(ts) >= 10 else "(no-ts)"
                 total_usd += cost
                 by_model[model] += cost
                 by_source[source] += cost
+                by_day_usd[day] += cost
+                tok_total["input"] += in_t
+                tok_total["output"] += out_t
+                tok_total["cache_creation"] += cc_t
+                tok_total["cache_read"] += cr_t
+                bm = by_model_tokens[model]
+                bm["input"] += in_t
+                bm["output"] += out_t
+                bm["cache_creation"] += cc_t
+                bm["cache_read"] += cr_t
+                bm["calls"] += 1
+                bd = by_day_tokens[day]
+                bd["input"] += in_t
+                bd["output"] += out_t
+                bd["cache_creation"] += cc_t
+                bd["cache_read"] += cr_t
+                bd["calls"] += 1
                 row_count += 1
                 if ts.startswith(today_iso):
                     today_usd += cost
+                    tok_today["input"] += in_t
+                    tok_today["output"] += out_t
+                    tok_today["cache_creation"] += cc_t
+                    tok_today["cache_read"] += cr_t
                 if ts.startswith(month_prefix):
                     month_usd += cost
                 # Rolling 24h window
@@ -957,6 +1095,39 @@ def _route_cost_summary(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     top_models = sorted(by_model.items(), key=lambda kv: kv[1], reverse=True)[:8]
     top_sources = sorted(by_source.items(), key=lambda kv: kv[1], reverse=True)[:8]
 
+    by_model_tokens_list = sorted(
+        (
+            {
+                "model": m,
+                "input": v["input"],
+                "output": v["output"],
+                "cache_creation": v["cache_creation"],
+                "cache_read": v["cache_read"],
+                "calls": v["calls"],
+                "cost_usd": round(by_model.get(m, 0.0), 4),
+            }
+            for m, v in by_model_tokens.items()
+        ),
+        key=lambda r: r["cost_usd"],
+        reverse=True,
+    )
+    by_day_list = sorted(
+        (
+            {
+                "day": d,
+                "cost_usd": round(by_day_usd.get(d, 0.0), 4),
+                "input": by_day_tokens[d]["input"],
+                "output": by_day_tokens[d]["output"],
+                "cache_creation": by_day_tokens[d]["cache_creation"],
+                "cache_read": by_day_tokens[d]["cache_read"],
+                "calls": by_day_tokens[d]["calls"],
+            }
+            for d in by_day_tokens
+        ),
+        key=lambda r: r["day"],
+        reverse=True,
+    )[:60]
+
     return 200, {
         "today_usd": round(today_usd, 4),
         "month_usd": round(month_usd, 4),
@@ -965,6 +1136,10 @@ def _route_cost_summary(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         "row_count": row_count,
         "top_models": [{"model": m, "cost_usd": round(c, 4)} for m, c in top_models],
         "top_sources": [{"source": s, "cost_usd": round(c, 4)} for s, c in top_sources],
+        "tokens_total": tok_total,
+        "tokens_today": tok_today,
+        "by_model_tokens": by_model_tokens_list,
+        "by_day": by_day_list,
         "anomalies": anomalies[:50],
         "thresholds": {
             "single_row_usd": COST_ANOMALY_SINGLE_ROW_USD,
@@ -1280,6 +1455,138 @@ def _route_skills_proposals_preview(req: dict[str, Any]) -> tuple[int, dict[str,
     return 200, _ssi.preview_patch(pid)
 
 
+def _fmt_tokens(n) -> str:
+    try:
+        n = int(n)
+    except Exception:
+        return "0"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.2f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
+
+
+def _render_tokens_html(summary: dict) -> str:
+    """Render /api/cost/summary payload into a self-contained HTML page.
+
+    No JS framework dependency — pure HTML + a sprinkle of CSS. The page
+    auto-refreshes every 30s so leaving it open shows live spend."""
+    from html import escape as _esc
+    if summary.get("error"):
+        return (
+            "<!doctype html><meta charset='utf-8'><title>tokens</title>"
+            f"<pre>cost ledger read failed: {_esc(str(summary['error']))}</pre>"
+        )
+    tt = summary.get("tokens_total") or {}
+    td = summary.get("tokens_today") or {}
+    by_model = summary.get("by_model_tokens") or []
+    by_day = summary.get("by_day") or []
+    by_source = summary.get("top_sources") or []
+    anomalies = summary.get("anomalies") or []
+    rows_model = "".join(
+        "<tr>"
+        f"<td>{_esc(r.get('model') or '')}</td>"
+        f"<td class='r'>{r.get('calls', 0):,}</td>"
+        f"<td class='r'>{_fmt_tokens(r.get('input'))}</td>"
+        f"<td class='r'>{_fmt_tokens(r.get('output'))}</td>"
+        f"<td class='r'>{_fmt_tokens(r.get('cache_read'))}</td>"
+        f"<td class='r'>${r.get('cost_usd', 0.0):.4f}</td>"
+        "</tr>"
+        for r in by_model[:20]
+    )
+    rows_day = "".join(
+        "<tr>"
+        f"<td>{_esc(r.get('day') or '')}</td>"
+        f"<td class='r'>{r.get('calls', 0):,}</td>"
+        f"<td class='r'>{_fmt_tokens(r.get('input'))}</td>"
+        f"<td class='r'>{_fmt_tokens(r.get('output'))}</td>"
+        f"<td class='r'>{_fmt_tokens(r.get('cache_read'))}</td>"
+        f"<td class='r'>${r.get('cost_usd', 0.0):.4f}</td>"
+        "</tr>"
+        for r in by_day[:30]
+    )
+    rows_source = "".join(
+        f"<tr><td>{_esc(r.get('source') or '')}</td>"
+        f"<td class='r'>${r.get('cost_usd', 0.0):.4f}</td></tr>"
+        for r in by_source[:10]
+    )
+    if anomalies:
+        anom_rows = "".join(
+            f"<li>{_esc(str(a))}</li>" for a in anomalies[:20]
+        )
+        anomalies_html = f"<section><h2>异常 ({len(anomalies)})</h2><ul class='warn'>{anom_rows}</ul></section>"
+    else:
+        anomalies_html = ""
+
+    return f"""<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>wlwl tokens · 用量仪表</title>
+<meta http-equiv="refresh" content="30">
+<style>
+  body {{ font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+          background: #0b1020; color: #e5ecff; max-width: 1100px; margin: 0 auto; padding: 24px; }}
+  h1 {{ font-size: 20px; margin: 0 0 6px; }}
+  h2 {{ font-size: 14px; margin: 24px 0 8px; color: #9ab; letter-spacing: .04em; text-transform: uppercase; }}
+  .meta {{ color: #7d8aa8; font-size: 12px; margin-bottom: 16px; }}
+  .grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; }}
+  .card {{ background: #141a32; border: 1px solid #1f2747; border-radius: 8px; padding: 12px 14px; }}
+  .card .v {{ font-size: 18px; font-weight: 600; color: #c0d3ff; }}
+  .card .l {{ color: #7d8aa8; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }}
+  .card .s {{ color: #aab8d8; font-size: 12px; margin-top: 4px; }}
+  table {{ width: 100%; border-collapse: collapse; background: #141a32; border-radius: 8px;
+           overflow: hidden; border: 1px solid #1f2747; font-size: 13px; }}
+  th, td {{ padding: 6px 10px; text-align: left; border-bottom: 1px solid #1f2747; }}
+  th {{ background: #1a213e; color: #9ab; font-weight: 500; font-size: 12px; }}
+  td.r, th.r {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  tr:last-child td {{ border-bottom: none; }}
+  .warn li {{ color: #ffb18a; }}
+  .footer {{ color: #5d6a8a; font-size: 11px; margin-top: 32px; text-align: center; }}
+</style>
+</head>
+<body>
+  <h1>用量仪表 · token & cost</h1>
+  <div class="meta">读取 <code>temp/cost_ledger.jsonl</code> · 每 30 秒自动刷新 · 共 {summary.get('row_count', 0):,} 行</div>
+
+  <div class="grid">
+    <div class="card"><div class="l">today (UTC) cost</div><div class="v">${summary.get('today_usd', 0):.4f}</div>
+      <div class="s">in {_fmt_tokens(td.get('input'))} / out {_fmt_tokens(td.get('output'))} / cache_read {_fmt_tokens(td.get('cache_read'))}</div></div>
+    <div class="card"><div class="l">rolling 24h</div><div class="v">${summary.get('rolling_24h_usd', 0):.4f}</div>
+      <div class="s">单条阈值 ${summary.get('thresholds', {}).get('single_row_usd', 1):.2f} · 24h 阈值 ${summary.get('thresholds', {}).get('day_usd', 20):.2f}</div></div>
+    <div class="card"><div class="l">month cost</div><div class="v">${summary.get('month_usd', 0):.4f}</div>
+      <div class="s">所有调用累计</div></div>
+    <div class="card"><div class="l">all-time cost</div><div class="v">${summary.get('total_usd', 0):.2f}</div>
+      <div class="s">in {_fmt_tokens(tt.get('input'))} / out {_fmt_tokens(tt.get('output'))} / cache_read {_fmt_tokens(tt.get('cache_read'))}</div></div>
+  </div>
+
+  <h2>按模型</h2>
+  <table>
+    <thead><tr><th>model</th><th class="r">calls</th><th class="r">input</th><th class="r">output</th><th class="r">cache_read</th><th class="r">cost</th></tr></thead>
+    <tbody>{rows_model or '<tr><td colspan="6" style="color:#7d8aa8">no data</td></tr>'}</tbody>
+  </table>
+
+  <h2>按天（最近 30）</h2>
+  <table>
+    <thead><tr><th>day</th><th class="r">calls</th><th class="r">input</th><th class="r">output</th><th class="r">cache_read</th><th class="r">cost</th></tr></thead>
+    <tbody>{rows_day or '<tr><td colspan="6" style="color:#7d8aa8">no data</td></tr>'}</tbody>
+  </table>
+
+  <h2>按来源</h2>
+  <table>
+    <thead><tr><th>source</th><th class="r">cost</th></tr></thead>
+    <tbody>{rows_source or '<tr><td colspan="2" style="color:#7d8aa8">no data</td></tr>'}</tbody>
+  </table>
+
+  {anomalies_html}
+
+  <div class="footer">CLI: <code>wlwl tokens</code> · JSON: <code>/api/cost/summary</code></div>
+</body>
+</html>
+"""
+
+
 # Path patterns. `<id>` is the projects' generated id.
 ROUTES: list[tuple[str, str, Callable[[dict[str, Any]], tuple[int, dict[str, Any]]]]] = [
     ("GET", "/api/health", _route_health),
@@ -1307,10 +1614,13 @@ ROUTES: list[tuple[str, str, Callable[[dict[str, Any]], tuple[int, dict[str, Any
     ("PATCH", "/api/profiles/<name>", _route_profiles_rename),
     ("DELETE", "/api/profiles/<name>", _route_profiles_delete),
     ("GET", "/api/bots", _route_bots_list),
+    ("GET", "/api/bots/llm_options", _route_bot_llm_options),
     ("POST", "/api/bots/<key>/start", _route_bot_start),
     ("POST", "/api/bots/<key>/stop", _route_bot_stop),
+    ("POST", "/api/bots/<key>/restart", _route_bot_restart),
     ("POST", "/api/bots/<key>/install_sdk", _route_bot_install_sdk),
     ("GET", "/api/bots/<key>/log", _route_bot_log),
+    ("PATCH", "/api/bots/<key>/llm", _route_bot_set_llm),
     ("POST", "/api/projects/<id>/open", _route_project_open),
     ("POST", "/api/llm/test", _route_llm_test),
     ("GET", "/api/settings", _route_settings_get),
@@ -1694,6 +2004,26 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 if os.environ.get("WLWL_API_DEBUG"):
                     print(f"[SSE] {path}: {exc}")
             return
+        # Standalone HTML dashboards that should render in a browser
+        # without the GUI bundle. They reuse /api/cost/summary's data via
+        # a one-shot call against the in-process route function — no
+        # extra round-trip to localhost.
+        if path in {"/tokens", "/tokens.html", "/dashboard/tokens"}:
+            if not self._check_auth():
+                return
+            try:
+                _status, payload = _route_cost_summary({})
+            except Exception as exc:
+                payload = {"error": str(exc)}
+            html = _render_tokens_html(payload)
+            body = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self._dispatch("GET")
 
     def do_POST(self) -> None:
@@ -1732,9 +2062,11 @@ def _auto_start_configured_bots() -> None:
 
     Replaces the old `launch_options.<key>` opt-in flag pattern: if the user
     bothered to put `fs_app_id` + `fs_app_secret` in the config and `pip
-    install lark_oapi`, we assume they want the bot up. Bots already running
-    (own subprocess from a previous boot, or external instance holding the
-    single-instance lock port) are skipped.
+    install lark_oapi`, we assume they want the bot up. Bots already managed
+    by this BotManager (running_self) are skipped. Bots running externally
+    with a discoverable PID get adopted via ``bm.start()`` so future stop /
+    restart calls can target them. Truly unmanageable orphans (port held
+    but PID not discoverable) are skipped with a warning.
     """
     try:
         from launcher.bot_manager import BOT_SPECS
@@ -1748,7 +2080,14 @@ def _auto_start_configured_bots() -> None:
         if spec is not None and not spec.auto_start:
             print(f"[api_server] auto-start bot {key}: skipped (disabled by default)", flush=True)
             continue
-        if st.running:
+        if st.running_self:
+            continue
+        if st.running_external and not getattr(st, "lock_holder_pid", None):
+            print(
+                f"[api_server] auto-start bot {key}: external orphan without "
+                f"discoverable PID, skipped (run `/api/bots/{key}/restart` to clean)",
+                flush=True,
+            )
             continue
         if not (st.configured and st.sdk_installed):
             continue

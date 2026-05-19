@@ -20,6 +20,30 @@
       "show_linenos": {"type": "boolean", "description": "Show line numbers", "default": true}}}
   }},
   {"type": "function", "function": {
+    "name": "file_read_batch",
+    "description": "Batch read-only preview of up to 12 files in one call. Returns per-file head or keyword-hit context plus total-lines & truncation flag. Use for SOP+TODO+history+candidate scans instead of N sequential file_read calls",
+    "parameters": {"type": "object", "properties": {
+      "paths": {"type": "array", "items": {"type": "string"}, "description": "Up to 12 file paths (relative or absolute). Duplicates auto-deduped"},
+      "keyword": {"type": "string", "description": "[Optional] If provided, every file returns the first case-insensitive match's surrounding lines instead of the head"},
+      "count": {"type": "integer", "description": "Lines per file (clamped 5-200)", "default": 40},
+      "show_linenos": {"type": "boolean", "description": "Show line numbers", "default": true}}, "required": ["paths"]}
+  }},
+  {"type": "function", "function": {
+    "name": "task_closure_check",
+    "description": "Read-only autonomous-task closure verifier. Snapshots whether the current R<n> report file exists, whether history.txt was prepended, how many TODO checkboxes remain, and how many approvals_board / pm_proposals items are still open. Returns a missing-step suggestion list. Does NOT mutate files or status",
+    "parameters": {"type": "object", "properties": {
+      "report_id": {"type": "string", "description": "[Optional] e.g. \"R42\". If omitted, uses the highest R<n> found under autonomous_reports/"},
+      "temp_root": {"type": "string", "description": "[Optional] Root containing autonomous_reports/, TODO.txt, approvals_board.md. Defaults to handler cwd"}}}
+  }},
+  {"type": "function", "function": {
+    "name": "self_readme",
+    "description": "Generate an AI-Native developer Readme by aggregating temp/cost_ledger.jsonl + git log + temp/activity/ + autonomous reports. Inspired by Readme.skill (study8677/Readme.skill); reproduces the same output from local data without cloning the upstream skill. Returns the rendered markdown",
+    "parameters": {"type": "object", "properties": {
+      "anonymize": {"type": "boolean", "description": "Replace project/model/author names with `Project A`, `Model B`, etc. for shareable output", "default": true},
+      "write": {"type": "boolean", "description": "Also write to disk (temp/self_readme.md unless `out` is given)", "default": true},
+      "out": {"type": "string", "description": "[Optional] Override output path"}}}
+  }},
+  {"type": "function", "function": {
     "name": "file_patch",
     "description": "Replace unique old_content with new_content. Exact match required (whitespace/indentation). On failure, file_read to recheck",
     "parameters": {"type": "object", "properties": {

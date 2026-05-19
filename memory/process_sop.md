@@ -46,4 +46,4 @@ p = subprocess.Popen([sys.executable, "long_task.py"])
 
 ## 已 launcher 起的进程不需要再注册
 
-ProjectManager 启动 streamlit session 和 BotManager 启动 bot subprocess 时已经自动注册了 `session:<id>` / `bot:<key>` 两类 label。你不要再手动注册它们；但可以用 `process({"action":"list"})` 看见它们。
+ProjectManager 启动 session subprocess 和 BotManager 启动 bot subprocess 时已经自动注册了 `session:<id>` / `bot:<key>` 两类 label。你不要再手动注册它们；但可以用 `process({"action":"list"})` 看见它们。

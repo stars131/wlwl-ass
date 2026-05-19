@@ -60,12 +60,76 @@ test = [
     "pytest-asyncio>=0.23",
 ]
 
+[project.scripts]
+# After `pip install -e .` (run by start_from_zero.cmd), this creates
+# .venv/Scripts/wlwl.exe — typing `wlwl` in any terminal with that dir on
+# PATH (or with the venv activated) drops into the interactive REPL, the
+# same way `claude` / `codex` work. See launcher/cli_repl.py.
+wlwl = "launcher.cli_repl:main"
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = []
+include-package-data = true
+py-modules = [
+    "agent_loop",
+    "agentmain",
+    "permissions",
+    "project_context",
+    "simphtml",
+    "TMWebDriver",
+    "wlwl_ass",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "assets*",
+    "frontends*",
+    "launcher*",
+    "llmcore*",
+    "memory*",
+    "plugins*",
+    "reflect*",
+    "tools*",
+    "voice*",
+]
+exclude = [
+    ".claude*",
+    ".venv*",
+    "docs*",
+    "gui*",
+    "sche_tasks*",
+    "scripts*",
+    "temp*",
+    "tests*",
+    "voice-website*",
+]
+namespaces = true
+
+[tool.setuptools.package-data]
+assets = [
+    "*.bat",
+    "*.json",
+    "*.md",
+    "*.pdf",
+    "*.py",
+    "*.sh",
+    "*.txt",
+    "demo/*",
+    "images/*",
+    "tmwd_cdp_bridge/*",
+]
+llmcore = ["*.yaml"]
+memory = [
+    "*.md",
+    "*.py",
+    "*.template.py",
+    "autonomous_operation_sop/*.md",
+    "skill_search/*.md",
+]
 
 [tool.pytest.ini_options]
 addopts = "-p no:cacheprovider"

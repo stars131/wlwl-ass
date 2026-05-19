@@ -18,6 +18,7 @@ revisited, write a new ADR that supersedes the old one (don't edit history).
 | [0008](./0008-kernel-api-delegation-and-forum.md) | Kernel API + Delegated Workers + Forum/Moderator | Proposed |
 | [0009](./0009-worker-plugin-interface.md) | Worker Plugin Interface (智能体即插即拔) | Proposed |
 | [0010](./0010-voice-conversation-loop.md) | Voice Conversation Loop (语音对话回路) | Proposed |
+| [0011](./0011-feishu-concierge-bot.md) | Feishu Concierge Bot (朋友代聊 / 日程协商机器人) | Proposed |
 
 ## Format
 

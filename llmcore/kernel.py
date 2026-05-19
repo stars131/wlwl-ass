@@ -827,6 +827,10 @@ _KIND_TO_FACTORY = {
     "xiaomi_stt": "wlwl_ass.workers.xiaomi_stt",
     "xiaomi_tts": "wlwl_ass.workers.xiaomi_tts",
     "local_whisper_stt": "wlwl_ass.workers.local_whisper_stt",
+    "concierge_kb": "wlwl_ass.workers.concierge_kb",
+    "concierge_slot": "wlwl_ass.workers.concierge_slot",
+    "concierge_escalate": "wlwl_ass.workers.concierge_escalate",
+    "concierge_audit": "wlwl_ass.workers.concierge_audit",
 }
 
 

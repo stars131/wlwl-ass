@@ -20,6 +20,30 @@
       "show_linenos": {"type": "boolean", "description": "是否显示行号，建议开启以辅助 file_patch 定位", "default": true}}}
   }},
   {"type": "function", "function": {
+    "name": "file_read_batch",
+    "description": "批量只读预览（最多 12 个文件）。每个文件返回首段或关键字命中片段、总行数与截断标志。适合 SOP+TODO+history+候选文件一次性预览，替代多次 file_read",
+    "parameters": {"type": "object", "properties": {
+      "paths": {"type": "array", "items": {"type": "string"}, "description": "最多 12 个文件路径（相对或绝对）；重复路径会自动去重"},
+      "keyword": {"type": "string", "description": "可选；若提供，每个文件返回首个命中（忽略大小写）周边内容，而不是首段"},
+      "count": {"type": "integer", "description": "每个文件返回的行数（限制在 5-200）", "default": 40},
+      "show_linenos": {"type": "boolean", "description": "是否显示行号", "default": true}}, "required": ["paths"]}
+  }},
+  {"type": "function", "function": {
+    "name": "task_closure_check",
+    "description": "只读核查 autonomous 任务收尾状态：检查当前轮 R<n> 报告是否存在、history.txt 是否 prepend、TODO.txt 还有几条未勾、approvals_board 与 pm_proposals 有几条 open；输出缺项提示。不改任何文件或状态",
+    "parameters": {"type": "object", "properties": {
+      "report_id": {"type": "string", "description": "可选；形如 R42。省略时自动取 autonomous_reports/ 下 R 编号最大的"},
+      "temp_root": {"type": "string", "description": "可选；包含 autonomous_reports/、TODO.txt、approvals_board.md 的根目录，默认为 handler cwd"}}}
+  }},
+  {"type": "function", "function": {
+    "name": "self_readme",
+    "description": "生成 AI-Native developer Readme：聚合 temp/cost_ledger.jsonl + git log + temp/activity/ + 自治报告，输出 markdown。受 Readme.skill (study8677/Readme.skill) 启发，使用本地数据复刻同样的产出",
+    "parameters": {"type": "object", "properties": {
+      "anonymize": {"type": "boolean", "description": "把项目/模型/作者名替换为 Project A / Model B 等可分享形式", "default": true},
+      "write": {"type": "boolean", "description": "同时写入磁盘（默认 temp/self_readme.md，或 out 指定路径）", "default": true},
+      "out": {"type": "string", "description": "可选；覆盖输出路径"}}}
+  }},
+  {"type": "function", "function": {
     "name": "file_patch",
     "description": "精细化局部文件修改。在文件中寻找唯一的 old_content 块并替换为 new_content。要求 old_content 必须在文件中唯一存在，且空格、缩进、换行必须与原文件完全一致。如果匹配失败，请使用 file_read 重新确认文件内容",
     "parameters": {"type": "object", "properties": {

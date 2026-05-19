@@ -18,6 +18,7 @@ export const apiConfigEntrySchema = z.object({
   max_retries: z.union([z.number(), z.string()]).optional(),
   connect_timeout: z.union([z.number(), z.string()]).optional(),
   read_timeout: z.union([z.number(), z.string()]).optional(),
+  temperature: z.union([z.number(), z.string()]).optional(),
   reasoning_effort: z.string().optional(),
   thinking_type: z.string().optional(),
   thinking_budget_tokens: z.union([z.number(), z.string()]).optional(),
