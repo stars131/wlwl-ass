@@ -43,7 +43,7 @@ def _get_client():
     app_secret = str(mykeys.get("fs_app_secret", "")).strip()
     if not app_id or not app_secret:
         raise RuntimeError("feishu credentials missing: set fs_app_id and fs_app_secret in mykey")
-    return lark.Client.builder().app_id(app_id).app_secret(app_secret).log_level(lark.LogLevel.WARN).build()
+    return lark.Client.builder().app_id(app_id).app_secret(app_secret).log_level(lark.LogLevel.WARNING).build()
 
 
 def _resolve_open_id(name: str, client: Any) -> tuple[str | None, str | None]:
@@ -123,11 +123,12 @@ def feishu_send(to: str, text: str, *, files: list[str] | None = None) -> str:
                 f"Use open_id (ou_xxx) directly, or run feishu_refresh_users() first.")
 
     import lark_oapi as lark
+    from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
     content = json.dumps({"text": text}, ensure_ascii=False)
-    body = lark.im.v1.message.CreateMessageRequest.builder() \
+    body = CreateMessageRequest.builder() \
         .receive_id_type("open_id") \
         .request_body(
-            lark.im.v1.message.CreateMessageRequestBody.builder()
+            CreateMessageRequestBody.builder()
             .receive_id(open_id).msg_type("text").content(content).build()
         ).build()
 
@@ -157,10 +158,10 @@ def feishu_send(to: str, text: str, *, files: list[str] | None = None) -> str:
                 file_resp = client.im.v1.file.create(file_req)
                 if file_resp.success():
                     file_content = json.dumps({"file_key": file_resp.data.file_key}, ensure_ascii=False)
-                    file_body = lark.im.v1.message.CreateMessageRequest.builder() \
+                    file_body = CreateMessageRequest.builder() \
                         .receive_id_type("open_id") \
                         .request_body(
-                            lark.im.v1.message.CreateMessageRequestBody.builder()
+                            CreateMessageRequestBody.builder()
                             .receive_id(open_id).msg_type("file").content(file_content).build()
                         ).build()
                     client.im.v1.message.create(file_body)
