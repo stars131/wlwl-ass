@@ -20,6 +20,7 @@ except Exception as _lf_exc:  # init bug — don't kill the agent, but surface o
 from wlwl_ass import WlwlAssHandler, smart_format, get_global_memory, format_error, consume_file
 from permissions import InteractivePermissionPrompter, PermissionPolicy
 from project_context import load_project_context
+from launcher import playbook
 try:
     from cli_commands import SharedCommandHandler
 except ImportError:
@@ -61,6 +62,10 @@ def get_system_prompt():
     with open(os.path.join(script_dir, f'assets/sys_prompt{lang_suffix}.txt'), 'r', encoding='utf-8') as f: prompt = f.read()
     prompt += f"\nToday: {time.strftime('%Y-%m-%d %a')}\n"
     prompt += get_global_memory()
+    try:
+        prompt += playbook.render_prompt()
+    except Exception:
+        pass
     return prompt
 
 @dataclass(frozen=True)

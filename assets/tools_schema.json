@@ -291,6 +291,17 @@
       "required": ["prompt", "output_path"]}}
   },
   {"type": "function", "function": {
+    "name": "curator_propose",
+    "description": "Queue a durable memory or playbook insight for user review. Use target='playbook' for reusable execution lessons that should improve future runs after approval. This never edits canonical memory directly and pending playbook entries are not injected into prompts.",
+    "parameters": {"type": "object", "properties": {
+      "insight": {"type": "string", "description": "One concise, verified lesson or memory candidate."},
+      "target": {"type": "string", "enum": ["L1", "L2", "user_profile", "playbook"], "description": "Where the proposal belongs. Use playbook for reusable strategies.", "default": "playbook"},
+      "rationale": {"type": "string", "description": "Why this is durable and worth review."},
+      "source_turn": {"type": "integer", "description": "Optional current turn number."},
+      "source_session": {"type": "string", "description": "Optional session/task identifier."}},
+      "required": ["insight"]}}
+  },
+  {"type": "function", "function": {
     "name": "skill_propose_patch",
     "description": "Propose an improvement to an SOP/skill file you just used. The proposal is queued for user review (does NOT modify the file directly). Use after running a skill if you noticed: a missing precondition, an outdated tool name, a clearer phrasing, a new edge case worth documenting. The user can accept (applies + auto-backs-up the original) or reject. Diff format: unified diff (preferred) OR a complete replacement file.",
     "parameters": {"type": "object", "properties": {

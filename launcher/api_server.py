@@ -1458,6 +1458,52 @@ def _route_skills_proposals_preview(req: dict[str, Any]) -> tuple[int, dict[str,
 # ─── Ecosystem Radar ──────────────────────────────────────────────────
 
 
+def _route_playbook_list(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    from launcher import playbook as _pb
+
+    status = str((req.get("query") or {}).get("status") or "").strip() or None
+    if status and status not in {"pending", "active", "rejected"}:
+        return 400, {"error": "invalid_status", "expected": "pending, active, rejected"}
+    return 200, {"entries": _pb.list_entries(status=status), "stats": _pb.stats()}
+
+
+def _route_playbook_create(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    from launcher import playbook as _pb
+
+    body = req.get("body") or {}
+    content = str(body.get("content") or body.get("insight") or "").strip()
+    if not content:
+        return 400, {"error": "missing_field", "expected": "content"}
+    tags = body.get("tags") if isinstance(body.get("tags"), list) else []
+    try:
+        entry = _pb.propose(
+            content,
+            category=str(body.get("category") or "manual"),
+            rationale=str(body.get("rationale") or ""),
+            source=str(body.get("source") or "api"),
+            tags=[str(tag) for tag in tags],
+        )
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
+    return 200, {"entry": entry}
+
+
+def _route_playbook_decide(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    from launcher import playbook as _pb
+
+    entry_id = req["params"]["entry_id"]
+    body = req.get("body") or {}
+    decision = str(body.get("decision") or "").strip()
+    note = str(body.get("note") or "")
+    if decision not in {"accept", "reject"}:
+        return 400, {"error": "invalid_decision", "expected": "accept or reject"}
+    if decision == "accept":
+        ok, msg = _pb.accept(entry_id, note=note)
+    else:
+        ok, msg = _pb.reject(entry_id, note=note)
+    return (200 if ok else 404), {"ok": ok, "message": msg}
+
+
 def _route_radar_status(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     """GET /api/radar/status — live PID, alive flag, and a log tail."""
     from launcher import radar_control
@@ -1691,6 +1737,9 @@ ROUTES: list[tuple[str, str, Callable[[dict[str, Any]], tuple[int, dict[str, Any
     ("POST", "/api/skills/proposals", _route_skills_proposals_create),
     ("POST", "/api/skills/proposals/<proposal_id>/decide", _route_skills_proposals_decide),
     ("GET", "/api/skills/proposals/<proposal_id>/preview", _route_skills_proposals_preview),
+    ("GET", "/api/playbook", _route_playbook_list),
+    ("POST", "/api/playbook", _route_playbook_create),
+    ("POST", "/api/playbook/<entry_id>/decide", _route_playbook_decide),
     ("GET", "/api/radar/status", _route_radar_status),
     ("POST", "/api/radar/start", _route_radar_start),
     ("POST", "/api/radar/stop", _route_radar_stop),

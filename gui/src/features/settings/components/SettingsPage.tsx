@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { DoctorPanel } from '@/features/doctor';
+import { PlaybookCard } from '@/features/playbook';
 
 import { useSettings, usePatchSettings } from '../hooks/useSettings';
 import { PERMISSION_MODES, type Settings } from '../types';
@@ -116,6 +117,8 @@ export function SettingsPage(): JSX.Element {
       </Group>
 
       <RadarCard />
+
+      <PlaybookCard />
 
       <div className="flex items-center justify-end gap-2 sticky bottom-0 bg-background py-2 border-t border-border">
         {patch.isError ? (

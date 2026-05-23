@@ -482,6 +482,32 @@ history 等）不需要在此登记，它们留在 `README.md` 即可。
     future code that does paste from the cookbook must update this
     entry's "Borrowed Scope" accordingly.
 
+### 20. Microsoft Sico (Playbook / Experience Learning pattern)
+
+- **Source / 源地址**: https://github.com/microsoft/sico
+- **License / 协议**: MIT
+- **Borrowed Scope / 借鉴范围**:
+  - **Design pattern only**: Sico's reviewed Playbook / Experience Learning
+    loop inspired `launcher/playbook.py`, where execution lessons are proposed,
+    manually accepted or rejected, and only accepted entries are injected into
+    future agent prompts.
+  - **Curator target concept**: `curator_propose(..., target="playbook")`
+    follows Sico's distinction between raw trajectory learning and curated
+    reusable strategies.
+- **Our Modifications / 我们的修改**:
+  - Implemented a stdlib-only local JSON store instead of Sico's Go backend,
+    Python Core service, reverse gRPC, database, Mem0/Qdrant, sandbox, or LLM
+    reflector/curator pipeline.
+  - Kept wlwl-ass's manual-review boundary: pending Playbook entries are never
+    injected into prompts; only accepted entries render in `get_system_prompt()`.
+  - Added lightweight API routes under `/api/playbook` and a Settings-page GUI
+    review card for accepting or rejecting pending Playbook entries.
+- **Borrowed On / 借鉴日期**: 2026-05-24
+- **Notes / 备注**:
+  - Referenced commit: `5a50b8bf2f52c45cc04a9ae5cd00350b610ad481`.
+  - No Sico source files were copied into wlwl-ass; the implementation is a
+    small local adaptation of the idea.
+
 ---
 
 ## Update Protocol / 更新规约

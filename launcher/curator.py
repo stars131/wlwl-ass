@@ -10,7 +10,7 @@ access to L1 (``memory/global_mem_insight.txt``). The protocol:
 
   2. **Agent submits proposals**, not patches. The agent calls
      ``tools/curator_propose.curator_propose(...)`` with a one-line
-     insight and a target layer (L1 / L2 / user_profile). Proposals
+     insight and a target layer (L1 / L2 / user_profile / playbook). Proposals
      accumulate in ``memory/curator_proposals.jsonl`` — append-only,
      auditable, never auto-applied.
 
@@ -116,7 +116,8 @@ def _render_prompt(turn: int, history_info: list[str], *, lang: str) -> str:
             f"{sample_block}\n\n"
             "If you spot a *durable shortcut* (a pattern, a SOP gap, a "
             "user preference, a tool quirk worth remembering), call:\n"
-            "  curator_propose(insight='one-line insight', target='L1' | 'L2' | 'user_profile', rationale='why this matters')\n"
+            "  curator_propose(insight='one-line insight', target='L1' | 'L2' | 'user_profile' | 'playbook', rationale='why this matters')\n"
+            "Use target='playbook' for reusable execution strategies; accepted playbook entries are injected into future prompts.\n"
             "Proposals are stored in memory/curator_proposals.jsonl — they are "
             "NOT auto-applied. The user reviews + applies them out of band.\n"
             "If nothing stands out, ignore this nudge and continue your "
@@ -128,7 +129,8 @@ def _render_prompt(turn: int, history_info: list[str], *, lang: str) -> str:
         "最近活动：\n"
         f"{sample_block}\n\n"
         "如果你发现了*可复用的捷径*（模式、SOP 缺口、用户偏好、值得记住的工具特性），调用：\n"
-        "  curator_propose(insight='一句话洞见', target='L1' | 'L2' | 'user_profile', rationale='为什么值得记')\n"
+        "  curator_propose(insight='一句话洞见', target='L1' | 'L2' | 'user_profile' | 'playbook', rationale='为什么值得记')\n"
+        "可复用执行策略用 target='playbook'；只有用户采纳后的 Playbook 条目才会注入未来提示。\n"
         "Proposal 写入 memory/curator_proposals.jsonl —— **不会自动应用**，用户线下审查再生效。\n"
         "如果没有特别可记的，忽略此提示继续当前任务。不要为了 propose 而 propose。"
     )

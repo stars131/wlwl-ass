@@ -98,6 +98,7 @@ TOOL_METADATA = {
     # blast radius but still ASK so the user sees PM cycles run.
     "pm_friction_scan": ToolMetadata("Mine friction signals for PM Track A", "low", PermissionDecision.ASK),
     "pm_proposal_decide": ToolMetadata("Record a PM proposal decision", "low", PermissionDecision.ASK),
+    "curator_propose": ToolMetadata("Propose memory/playbook entry", "low", PermissionDecision.ASK),
 }
 
 

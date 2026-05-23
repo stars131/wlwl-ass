@@ -1627,6 +1627,27 @@ class WlwlAssHandler(BaseHandler):
         yield f"[skill_propose_patch] queued proposal {prop['id']} for {skill_id}\n"
         return StepOutcome({"proposal": prop}, next_prompt="\n")
 
+    def do_curator_propose(self, args, response):
+        from tools.curator_propose import curator_propose
+
+        insight = str(args.get('insight') or '').strip()
+        target = str(args.get('target') or 'L1').strip() or 'L1'
+        rationale = str(args.get('rationale') or '')
+        source_session = str(args.get('source_session') or '')
+        try:
+            source_turn = int(args.get('source_turn')) if args.get('source_turn') is not None else self.current_turn
+        except (TypeError, ValueError):
+            source_turn = self.current_turn
+        result = curator_propose(
+            insight=insight,
+            target=target,
+            rationale=rationale,
+            source_turn=source_turn,
+            source_session=source_session,
+        )
+        yield f"[curator_propose] {result}\n"
+        return StepOutcome({"message": result}, next_prompt="\n")
+
     def do_no_tool(self, args, response):
         '''这是一个特殊工具，由引擎自主调用，不要包含在TOOLS_SCHEMA里。
         当模型在一轮中未显式调用任何工具时，由引擎自动触发。
@@ -1705,6 +1726,7 @@ class WlwlAssHandler(BaseHandler):
 **禁止**：临时变量、具体推理过程、未验证信息、通用常识、你可以轻松复现的细节、只是做了但没有验证的信息
 **操作**：严格遵循提供的L0的记忆更新SOP。先 `file_read` 看现有 → 判断类型 → 最小化更新 → 无新内容跳过，保证对记忆库最小局部修改。\n
 ''' + get_global_memory()
+        prompt += "\n### [Reviewed Playbook]\n如果本轮沉淀的是可复用执行策略、避坑经验或工具使用规律，而不是环境事实/用户偏好，请调用 curator_propose(insight='...', target='playbook', rationale='...') 提交给用户审核。待审 Playbook 不会注入提示；只有用户采纳后才会进入未来系统提示。\n"
         # ── MemoryNamespace: provide entity index for context-aware recall ──
         try:
             ms = self._mem_store

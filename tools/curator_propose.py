@@ -23,7 +23,7 @@ import time
 from typing import Literal
 
 
-_VALID_TARGETS = ("L1", "L2", "user_profile")
+_VALID_TARGETS = ("L1", "L2", "user_profile", "playbook")
 _PROPOSALS_REL_PATH = os.path.join("memory", "curator_proposals.jsonl")
 
 
@@ -32,9 +32,16 @@ def _project_root() -> str:
     return os.path.dirname(here)
 
 
+def proposals_path() -> str:
+    override = os.environ.get("WLWL_CURATOR_PROPOSALS_PATH")
+    if override:
+        return override
+    return os.path.join(_project_root(), _PROPOSALS_REL_PATH)
+
+
 def curator_propose(
     insight: str,
-    target: Literal["L1", "L2", "user_profile"] = "L1",
+    target: Literal["L1", "L2", "user_profile", "playbook"] = "L1",
     rationale: str = "",
     source_turn: int | None = None,
     source_session: str = "",
@@ -68,7 +75,7 @@ def curator_propose(
     if source_session:
         record["source_session"] = str(source_session)[:200]
 
-    path = os.path.join(_project_root(), _PROPOSALS_REL_PATH)
+    path = proposals_path()
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         # Append-only — one JSON object per line, newline-terminated.
@@ -76,6 +83,27 @@ def curator_propose(
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except OSError as exc:
         return f"[curator_propose error] could not write {path}: {exc}"
+    if target == "playbook":
+        try:
+            from launcher import playbook
+
+            entry = playbook.propose(
+                insight,
+                category="curator",
+                rationale=rationale,
+                source="curator_propose",
+                source_turn=record.get("source_turn"),
+                source_session=str(record.get("source_session") or ""),
+            )
+            return (
+                f"Playbook proposal {entry['id']} recorded. It will be injected "
+                "only after user approval."
+            )
+        except Exception as exc:
+            return (
+                f"Proposal recorded for {target}, but playbook queue failed: {exc}. "
+                f"The user can still review {_PROPOSALS_REL_PATH}."
+            )
     return (
         f"Proposal recorded for {target}. The user will review proposals "
         f"in {_PROPOSALS_REL_PATH} before any change to canonical memory."
@@ -85,7 +113,7 @@ def curator_propose(
 def list_proposals(*, limit: int = 50) -> list[dict]:
     """Read recent proposals (newest last). Returns ``[]`` when the
     ledger is missing / corrupt — never raises."""
-    path = os.path.join(_project_root(), _PROPOSALS_REL_PATH)
+    path = proposals_path()
     if not os.path.isfile(path):
         return []
     out: list[dict] = []

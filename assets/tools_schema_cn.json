@@ -205,6 +205,17 @@
       "required": ["prompt"]}}
   },
   {"type": "function", "function": {
+    "name": "curator_propose",
+    "description": "提交一个长期记忆或 Playbook 洞见给用户审核。target='playbook' 用于可复用的执行经验；不会直接修改 canonical memory，待审 Playbook 不会注入系统提示。",
+    "parameters": {"type": "object", "properties": {
+      "insight": {"type": "string", "description": "一句简洁、已验证、可长期复用的经验或记忆候选。"},
+      "target": {"type": "string", "enum": ["L1", "L2", "user_profile", "playbook"], "description": "提案目标。可复用执行策略用 playbook。", "default": "playbook"},
+      "rationale": {"type": "string", "description": "为什么它长期有效、值得审核。"},
+      "source_turn": {"type": "integer", "description": "可选：当前 turn。"},
+      "source_session": {"type": "string", "description": "可选：session/task 标识。"}},
+      "required": ["insight"]}}
+  },
+  {"type": "function", "function": {
     "name": "pm_friction_scan",
     "description": "PM 角色 Track A：扫描近期 activity 日志找摩擦信号（重试爆发 / 错误后重试 / 超长 turn / 异常退出），按 (signal_type, tool) 预聚类，强制 ≥3 个不同 run 的 provenance 门槛后返回结构化 JSON。**本工具自己不调用 LLM、不写提案**——agent 在自己的回合内读返回的 clusters 再做更智能的聚类，并通过 file_patch/file_write 把幸存提案写到 temp/pm_proposals.md。返回前会先检查节奏/接受率节流。",
     "parameters": {"type": "object", "properties": {
