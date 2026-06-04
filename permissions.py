@@ -81,6 +81,10 @@ TOOL_METADATA = {
     # wechat_send drives the WeChat desktop client via wxauto: irreversible
     # outbound IM. Always ASK, never silently allow.
     "wechat_send": ToolMetadata("Send WeChat message via wxauto", "high", PermissionDecision.ASK),
+    # feishu_send uses the configured Feishu app to send outbound IM. Same
+    # irreversible posture as wechat_send for generic agents; Feishu platform
+    # entrypoints may still handle current-session replies directly.
+    "feishu_send": ToolMetadata("Send Feishu message via OpenAPI", "high", PermissionDecision.ASK),
     # gui_operator can move the mouse, type text, and click real UI controls.
     # Observation is harmless, but the tool is classified by its most powerful
     # action because permission prompts are per-tool today.

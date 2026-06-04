@@ -39,7 +39,7 @@ fn run() -> anyhow::Result<()> {
     let runtime = PythonRuntime::start(&project_root)
         .context("failed to start python launcher.api_server")?;
     let api_base = runtime.base_url();
-    let api_token = std::env::var("WLWL_API_AUTH_TOKEN").unwrap_or_default();
+    let api_token = runtime.auth_token();
     log::info!("python api server up at {api_base}");
 
     let state = AppState {

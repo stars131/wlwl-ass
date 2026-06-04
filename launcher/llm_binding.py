@@ -103,6 +103,73 @@ def resolve_to_config_names(
     return resolved
 
 
+def sort_config_names_by_priority(
+    config_names: list[str],
+    configs_list: list[dict[str, Any]],
+) -> list[str]:
+    """Sort resolved config names by the API config page ordering.
+
+    The API config page groups by category and sorts each category by
+    descending numeric priority. Runtime profile bindings need the same
+    ordering so selecting a profile in Sessions means "use the best member
+    first", not "use whatever checkbox order happened to be saved".
+    """
+    if not config_names:
+        return []
+    try:
+        from launcher.api_config import API_CONFIG_CATEGORY_ORDER, normalize_priority
+    except Exception:  # pragma: no cover - import failure fallback is trivial
+        API_CONFIG_CATEGORY_ORDER = {
+            "language": 0,
+            "multimodal": 1,
+            "voice": 2,
+            "utility": 3,
+        }
+
+        def normalize_priority(value):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+
+    wanted = {name: idx for idx, name in enumerate(config_names)}
+    by_name = {
+        str(c.get("name") or ""): c
+        for c in (configs_list or [])
+        if isinstance(c, dict)
+    }
+
+    def key(name: str):
+        cfg = by_name.get(name) or {}
+        category = str(cfg.get("category") or "language")
+        return (
+            API_CONFIG_CATEGORY_ORDER.get(category, len(API_CONFIG_CATEGORY_ORDER)),
+            -normalize_priority(cfg.get("priority")),
+            wanted.get(name, len(wanted)),
+        )
+
+    return sorted([name for name in config_names if name in wanted], key=key)
+
+
+def resolve_to_config_names_by_priority(
+    kind: BindingKind,
+    name: str,
+    profiles_state: dict[str, Any],
+    configs_list: list[dict[str, Any]],
+) -> list[str]:
+    """Resolve a binding, then order profile members by category/priority.
+
+    Single-config bindings are unchanged. Profile bindings still drop missing
+    and nested mixin members via :func:`resolve_to_config_names`, then sort the
+    remaining members to match the API config page's category + priority
+    ordering.
+    """
+    resolved = resolve_to_config_names(kind, name, profiles_state, configs_list)
+    if kind == "profile":
+        return sort_config_names_by_priority(resolved, configs_list)
+    return resolved
+
+
 def synthesize_mixin_entry(
     bot_key: str,
     config_names: list[str],

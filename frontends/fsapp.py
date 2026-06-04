@@ -7,6 +7,7 @@ os.chdir(PROJECT_ROOT)
 from agentmain import GeneraticAgent
 from frontends.chatapp_common import FILE_HINT, format_restore
 from frontends.continue_cmd import handle_frontend_command as handle_continue_frontend, reset_conversation
+from frontends.feishu_session import build_context, maybe_handle_platform_action, render_prompt
 import llmcore
 from llmcore import mykeys
 from launcher.llm_binding import (
@@ -433,8 +434,10 @@ def _apply_binding_once() -> None:
 _apply_binding_once()
 
 
-def _resolve_extra_prompt(open_id):
+def _resolve_extra_prompt(open_id, session_ctx=None):
     p = (USER_PROMPTS.get(open_id) or SYSTEM_PROMPT or "").strip()
+    if session_ctx is not None:
+        return render_prompt(session_ctx, p)
     return f"\n\n# Feishu Persona\n{p}" if p else ""
 
 
@@ -446,18 +449,21 @@ def _apply_prompt(agent, prompt_text):
             b.extra_sys_prompt = prompt_text
 
 
-def _get_agent(open_id):
+def _get_agent(open_id, session_ctx=None):
     with _agent_lock:
         slot = _agent_slots.get(open_id)
+        prompt_text = _resolve_extra_prompt(open_id, session_ctx)
         if slot and slot.thread.is_alive():
             slot.last_used_ts = time.time()
+            if session_ctx is not None:
+                _apply_prompt(slot.agent, prompt_text)
             return slot.agent
         a = GeneraticAgent()
         if _TARGET_LLM_NAME:
             ok = a.select_llm_by_name(_TARGET_LLM_NAME)
             if not ok:
                 print(f"[fsapp] WARN: target LLM {_TARGET_LLM_NAME!r} not in agent clients, using default llm_no={a.llm_no}")
-        _apply_prompt(a, _resolve_extra_prompt(open_id))
+        _apply_prompt(a, prompt_text)
         t = threading.Thread(target=a.run, name=f"fs-agent-{open_id[:8]}", daemon=True)
         t.start()
         _agent_slots[open_id] = _AgentSlot(a, t, time.time())
@@ -861,14 +867,34 @@ def handle_message(data):
     else:
         preview = (user_input[:40] + "…") if len(user_input) > 40 else user_input
     print(f"收到消息 [{open_id}] ({message.message_type}, {len(image_paths)} images): {preview}")
-    agent = _get_agent(open_id)
+    session_ctx = build_context(
+        open_id=open_id,
+        chat_id=chat_id,
+        message_id=getattr(message, "message_id", ""),
+        message_type=getattr(message, "message_type", "text"),
+        public_access=PUBLIC_ACCESS,
+        attachment_paths=tuple(image_paths),
+    )
     if message.message_type == "text" and user_input.startswith("/"):
         return handle_command(open_id, user_input, chat_id)
 
+    receive_id = session_ctx.receive_id
+    rid_type = session_ctx.receive_id_type
+    if message.message_type == "text":
+        handled = maybe_handle_platform_action(
+            user_input,
+            session_ctx,
+            send_text=lambda text: send_message(receive_id, text, receive_id_type=rid_type),
+            send_file=lambda path: _send_local_file(receive_id, path, receive_id_type=rid_type),
+            base_dir=PROJECT_ROOT,
+        )
+        if handled:
+            return
+
+    agent = _get_agent(open_id, session_ctx)
+
     def run_agent():
         user_tasks[open_id] = {"running": True}
-        receive_id = chat_id or open_id
-        rid_type = "chat_id" if chat_id else "open_id"
         done_event = threading.Event()
         hook_key = f"fs_{open_id}"
         card = _TaskCard(receive_id, rid_type)

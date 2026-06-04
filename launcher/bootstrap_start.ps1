@@ -1,6 +1,6 @@
 param(
-    [ValidateSet("auto", "tauri")]
-    [string]$Mode = "auto",
+    [ValidateSet("auto", "web")]
+    [string]$Mode = "web",
     [switch]$CheckOnly,
     [switch]$SkipInstall,
     [switch]$SkipNode,
@@ -291,17 +291,22 @@ function Install-PythonDependencies {
 
 function Resolve-Tool {
     param([Parameter(Mandatory = $true)][string]$Name)
+    if ($Name -in @("npm", "npx")) {
+        foreach ($cmdName in @("$Name.cmd", "$Name.exe", "$Name.bat")) {
+            $cmdCandidate = Get-Command $cmdName -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($cmdCandidate) {
+                return $cmdCandidate.Source
+            }
+        }
+    }
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($cmd) {
         return $cmd.Source
     }
     # Fallback: probe well-known install dirs the user's PATH may have missed
-    # (Rustup / Node / npm installers don't always trigger an immediate refresh
-    # of the PowerShell session's PATH; bash sees them, PowerShell doesn't.)
+    # (Node / npm installers don't always trigger an immediate refresh of the
+    # PowerShell session's PATH; bash sees them, PowerShell doesn't.)
     $extraDirs = @()
-    if ($Name -in @("cargo", "rustc", "rustup")) {
-        $extraDirs += (Join-Path $env:USERPROFILE ".cargo\bin")
-    }
     if ($Name -in @("npm", "node", "npx")) {
         if ($env:APPDATA) { $extraDirs += (Join-Path $env:APPDATA "npm") }
         $extraDirs += (Join-Path $env:USERPROFILE "npm")
@@ -313,8 +318,7 @@ function Resolve-Tool {
         foreach ($ext in @(".exe", ".cmd", ".bat", "")) {
             $candidate = Join-Path $dir ($Name + $ext)
             if (Test-Path -LiteralPath $candidate) {
-                # Prepend the dir to PATH so spawned children (e.g. npm run
-                # tauri:dev → cargo) inherit it.
+                # Prepend the dir to PATH so spawned children inherit it.
                 if (($env:PATH -split [System.IO.Path]::PathSeparator) -notcontains $dir) {
                     $env:PATH = $dir + [System.IO.Path]::PathSeparator + $env:PATH
                     Write-Log "Resolve-Tool: prepending $dir to PATH (found $Name out-of-band)"
@@ -342,52 +346,11 @@ function Get-NodeVersion {
     return $null
 }
 
-function Find-PackagedTauriBinary {
-    $releaseDir = Join-Path $script:Root "gui\src-tauri\target\release"
-    $candidates = @(
-        (Join-Path $releaseDir "wlwl-ass-gui.exe"),
-        (Join-Path $releaseDir "wlwl-ass.exe")
-    )
-    foreach ($candidate in $candidates) {
-        if (Test-Path -LiteralPath $candidate) {
-            return $candidate
-        }
-    }
-    return $null
-}
-
-function Test-TauriToolchain {
-    $reasons = New-Object System.Collections.Generic.List[string]
-    $nodeVersion = Get-NodeVersion
-    $npm = Resolve-Tool "npm"
-    $cargo = Resolve-Tool "cargo"
-
-    if ($null -eq $nodeVersion) {
-        $reasons.Add("Node.js was not found or did not report a version.")
-    } elseif ($nodeVersion -lt ([System.Version]::new(20, 9, 0))) {
-        $reasons.Add("Node.js $nodeVersion is too old; gui/package.json requires >=20.9.0.")
-    }
-    if (-not $npm) {
-        $reasons.Add("npm was not found.")
-    }
-    if (-not $cargo) {
-        $reasons.Add("Rust cargo was not found.")
-    }
-
-    return [pscustomobject]@{
-        Ready = ($reasons.Count -eq 0)
-        Reasons = @($reasons.ToArray())
-        NodeVersion = $nodeVersion
-        Npm = $npm
-        Cargo = $cargo
-    }
-}
-
 function Ensure-GuiNodeDependencies {
     param([switch]$Required)
     if ($SkipNode) {
         if ($Required) {
-            throw "-SkipNode cannot be used when Tauri mode is required."
+            throw "-SkipNode cannot be used when web UI startup is required."
         }
         Write-Log "Skipping Node dependency installation because -SkipNode was specified." "WARN"
         return $false
@@ -398,7 +361,7 @@ function Ensure-GuiNodeDependencies {
         if ($Required) {
             throw "npm was not found. Install Node.js 20+ and rerun."
         }
-        Write-Log "npm was not found; Tauri GUI cannot be prepared." "WARN"
+        Write-Log "npm was not found; web UI cannot be prepared." "WARN"
         return $false
     }
 
@@ -429,7 +392,7 @@ function Ensure-GuiNodeDependencies {
         if ($Required) {
             throw "Failed to install GUI Node dependencies."
         }
-        Write-Log "Failed to install GUI Node dependencies; auto mode will fall back to Qt." "WARN"
+        Write-Log "Failed to install GUI Node dependencies." "WARN"
         return $false
     }
     return $true
@@ -457,21 +420,19 @@ function Run-Validation {
 function Get-LaunchCommand {
     param([string]$RequestedMode)
 
-    $packaged = Find-PackagedTauriBinary
-    if ($packaged) {
-        Write-Log "Packaged Tauri binary exists: $packaged"
-        return [pscustomobject]@{ Script = "launch.pyw"; Args = @() }
+    $nodeVersion = Get-NodeVersion
+    $npm = Resolve-Tool "npm"
+    if ($null -eq $nodeVersion) {
+        throw "Node.js was not found or did not report a version. Install Node.js >=20.9 and rerun."
+    }
+    if ($nodeVersion -lt ([System.Version]::new(20, 9, 0))) {
+        throw "Node.js $nodeVersion is too old; gui/package.json requires >=20.9.0."
+    }
+    if (-not $npm) {
+        throw "npm was not found. Install Node.js 20+ and rerun."
     }
 
-    $toolchain = Test-TauriToolchain
-    if (-not $toolchain.Ready) {
-        foreach ($reason in $toolchain.Reasons) {
-            Write-Log "Tauri unavailable: $reason" "ERROR"
-        }
-        throw "Tauri toolchain not ready. Install Node.js >=20.9 and Rust cargo, then rerun."
-    }
-
-    Write-Log "Tauri toolchain ready. Node=$($toolchain.NodeVersion), npm=$($toolchain.Npm), cargo=$($toolchain.Cargo)"
+    Write-Log "Web UI toolchain ready. Node=$nodeVersion, npm=$npm"
     $nodeReady = Ensure-GuiNodeDependencies -Required
     if (-not $nodeReady) {
         throw "Failed to install GUI Node dependencies."
@@ -487,7 +448,22 @@ function Start-WlwlAss {
         Write-Log "Check-only mode complete. Launch command would be: $(Format-CommandLine -FilePath $PythonExe -Arguments $commandArgs)"
         return
     }
-    $null = Invoke-LoggedCommand -FilePath $PythonExe -Arguments $commandArgs
+    $commandLine = Format-CommandLine -FilePath $PythonExe -Arguments $commandArgs
+    Write-Log "RUN ($script:Root): $commandLine"
+    Push-Location -LiteralPath $script:Root
+    try {
+        & $PythonExe @commandArgs
+        $exitCode = $LASTEXITCODE
+        if ($null -eq $exitCode) {
+            $exitCode = 0
+        }
+    } finally {
+        Pop-Location
+    }
+    Write-Log "EXIT ${exitCode}: $commandLine"
+    if ($exitCode -ne 0) {
+        throw "Command failed with exit code ${exitCode}: $commandLine"
+    }
 }
 
 function Main {

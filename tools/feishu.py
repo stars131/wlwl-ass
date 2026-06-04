@@ -1,6 +1,7 @@
 """Feishu / Lark outbound messaging via Open API.
 
-Sends text/card messages to a given user identified by username or open_id.
+Sends text/card messages to a given user or chat identified by username,
+open_id, or chat_id.
 Maintains a local open_id <-> display-name mapping cache.
 
 Prerequisites:
@@ -106,30 +107,43 @@ def _query_user_info(open_id: str, client: Any) -> dict | None:
     return None
 
 
-def feishu_send(to: str, text: str, *, files: list[str] | None = None) -> str:
+def feishu_send(
+    to: str,
+    text: str,
+    *,
+    files: list[str] | None = None,
+    receive_id_type: str = "open_id",
+) -> str:
     to = (to or "").strip()
     text = (text or "").strip()
     if not to or not text:
         return "[feishu_send error] to + text required"
+    receive_id_type = (receive_id_type or "open_id").strip()
+    if receive_id_type not in {"open_id", "chat_id"}:
+        return "[feishu_send error] receive_id_type must be open_id or chat_id"
 
     try:
         client = _get_client()
     except Exception as exc:
         return f"[feishu_send error] client init failed: {exc}"
 
-    open_id, display_name = _resolve_open_id(to, client)
-    if not open_id:
-        return (f"[feishu_send error] user '{to}' not found. "
-                f"Use open_id (ou_xxx) directly, or run feishu_refresh_users() first.")
+    if receive_id_type == "open_id":
+        receive_id, display_name = _resolve_open_id(to, client)
+        if not receive_id:
+            return (f"[feishu_send error] user '{to}' not found. "
+                    f"Use open_id (ou_xxx) directly, or run feishu_refresh_users() first.")
+    else:
+        receive_id = to
+        display_name = f"chat:{to}"
 
     import lark_oapi as lark
     from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
     content = json.dumps({"text": text}, ensure_ascii=False)
     body = CreateMessageRequest.builder() \
-        .receive_id_type("open_id") \
+        .receive_id_type(receive_id_type) \
         .request_body(
             CreateMessageRequestBody.builder()
-            .receive_id(open_id).msg_type("text").content(content).build()
+            .receive_id(receive_id).msg_type("text").content(content).build()
         ).build()
 
     try:
@@ -159,10 +173,10 @@ def feishu_send(to: str, text: str, *, files: list[str] | None = None) -> str:
                 if file_resp.success():
                     file_content = json.dumps({"file_key": file_resp.data.file_key}, ensure_ascii=False)
                     file_body = CreateMessageRequest.builder() \
-                        .receive_id_type("open_id") \
+                        .receive_id_type(receive_id_type) \
                         .request_body(
                             CreateMessageRequestBody.builder()
-                            .receive_id(open_id).msg_type("file").content(file_content).build()
+                            .receive_id(receive_id).msg_type("file").content(file_content).build()
                         ).build()
                     client.im.v1.message.create(file_body)
                     sent_files.append(abspath)

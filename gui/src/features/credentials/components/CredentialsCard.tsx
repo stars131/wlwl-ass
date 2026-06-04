@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { useCredentials, usePatchCredentials } from '../hooks/useCredentials';
 import type { CredValue } from '../api/credentialsApi';
@@ -28,12 +28,14 @@ export function CredentialsCard(): JSX.Element {
   const patch = usePatchCredentials();
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState<Record<string, boolean>>({});
+  const dirtyRef = useRef(false);
   const [open, setOpen] = useState<string | null>(null);
 
   // Whenever server state lands, copy values into local string draft (lists
   // are joined by comma for the textbox).
   useEffect(() => {
     if (!creds.data) return;
+    if (dirtyRef.current) return;
     const next: Record<string, string> = {};
     for (const bot of Object.keys(creds.data.fields)) {
       for (const field of creds.data.fields[bot] ?? []) {
@@ -47,6 +49,7 @@ export function CredentialsCard(): JSX.Element {
   }, [creds.data]);
 
   const onChange = (field: string, value: string) => {
+    dirtyRef.current = true;
     setDraft((d) => ({ ...d, [field]: value }));
     setDirty((d) => ({ ...d, [field]: true }));
   };
@@ -67,7 +70,12 @@ export function CredentialsCard(): JSX.Element {
       }
     }
     if (Object.keys(payload).length === 0) return;
-    patch.mutate(payload);
+    patch.mutate(payload, {
+      onSuccess: () => {
+        dirtyRef.current = false;
+        setDirty({});
+      },
+    });
   };
 
   if (creds.isLoading) {
@@ -152,6 +160,9 @@ export function CredentialsCard(): JSX.Element {
         <p className="text-xs text-destructive">保存失败：{String(patch.error)}</p>
       ) : null}
       {patch.isSuccess ? <p className="text-xs text-muted-foreground">已保存</p> : null}
+      {Object.values(dirty).some(Boolean) ? (
+        <p className="text-xs text-muted-foreground">有未保存的凭据更改，热重载不会覆盖当前输入。</p>
+      ) : null}
     </div>
   );
 }

@@ -23,9 +23,15 @@ from typing import Any
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 READY_TIMEOUT_S = 20.0
 STOP_TIMEOUT_S = 5.0
+CANCEL_GRACE_S = 2.0
+CANCEL_KILL_TIMEOUT_S = 0.5
 
 TAG_PATS = [r"<" + t + r">.*?</" + t + r">" for t in ("thinking", "summary", "tool_use", "file_content")]
 REQUEST_MODES = {"auto", "chat", "task", "canvas"}
+HISTORY_CONTEXT_MAX_CHARS = 24_000
+HISTORY_MESSAGE_MAX_CHARS = 1_800
+HISTORY_RECENT_MESSAGES = 24
+HISTORY_ARCHIVE_KEEP_MESSAGES = 1_000
 TEXT_EXTS = {
     ".bat",
     ".cmd",
@@ -147,6 +153,37 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def settle_stale_running_messages(
+    messages: list[dict[str, Any]],
+    *,
+    active_assistant_id: str | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Mark orphan running assistant messages as aborted.
+
+    ``active_assistant_id`` is the single assistant message owned by an active
+    runtime. Any other running assistant in persisted history is stale.
+    """
+    changed = False
+    stamp = _now()
+    for msg in messages:
+        if msg.get("role") != "assistant" or msg.get("status") != "running":
+            continue
+        if active_assistant_id and msg.get("id") == active_assistant_id:
+            continue
+        msg["status"] = "aborted"
+        if not str(msg.get("content") or "").strip():
+            msg["content"] = "Stopped."
+        msg["updated_at"] = stamp
+        task = msg.get("task")
+        steps = task.get("steps") if isinstance(task, dict) else None
+        if isinstance(steps, list):
+            for step in steps:
+                if isinstance(step, dict) and step.get("status") in ("running", "pending"):
+                    step["status"] = "aborted"
+        changed = True
+    return messages, changed
+
+
 def _clean_reply(text: str) -> str:
     for pat in TAG_PATS:
         text = re.sub(pat, "", text or "", flags=re.DOTALL)
@@ -163,6 +200,67 @@ def _build_done_text(raw_text: str) -> str:
     if files:
         body = (body + "\n\n" if body else "") + "\n".join(f"生成文件: {p}" for p in files)
     return body or "..."
+
+
+def _truncate_history_text(text: str, limit: int = HISTORY_MESSAGE_MAX_CHARS) -> str:
+    text = _strip_files(_clean_reply(text or ""))
+    if len(text) <= limit:
+        return text
+    keep = max(0, limit - 24)
+    return text[:keep].rstrip() + "\n...[truncated]"
+
+
+def _build_history_context(
+    messages: list[dict[str, Any]],
+    *,
+    exclude_ids: set[str] | None = None,
+    max_chars: int = HISTORY_CONTEXT_MAX_CHARS,
+    recent_messages: int = HISTORY_RECENT_MESSAGES,
+) -> str:
+    """Return compact same-project chat history to prepend to the next turn.
+
+    The worker process owns the live LLM session, but GUI message history is
+    persisted by project in the parent process. New/restarted workers otherwise
+    only see the latest user text, so we inject a bounded transcript built from
+    this project's persisted history.
+    """
+
+    exclude_ids = exclude_ids or set()
+    rows: list[str] = []
+    for msg in messages:
+        msg_id = str(msg.get("id") or "")
+        if msg_id and msg_id in exclude_ids:
+            continue
+        role = str(msg.get("role") or "").strip().lower()
+        if role not in {"system", "user", "assistant"}:
+            continue
+        if role == "assistant" and str(msg.get("status") or "") == "running":
+            continue
+        content = _truncate_history_text(str(msg.get("content") or ""))
+        if not content:
+            continue
+        status = str(msg.get("status") or "")
+        status_suffix = f" ({status})" if role == "assistant" and status and status != "done" else ""
+        rows.append(f"[{role}{status_suffix}] {content}")
+
+    if not rows:
+        return ""
+    selected = rows[-recent_messages:]
+    body = "\n\n".join(selected)
+    if len(body) <= max_chars:
+        return body
+    chunks: list[str] = []
+    total = 0
+    for row in reversed(selected):
+        row_len = len(row) + (2 if chunks else 0)
+        if chunks and total + row_len > max_chars:
+            break
+        if not chunks and row_len > max_chars:
+            row = row[-max_chars:]
+            row_len = len(row)
+        chunks.append(row)
+        total += row_len
+    return "\n\n".join(reversed(chunks))
 
 
 def _classify_intent(text: str, requested_mode: str = "auto") -> dict[str, Any]:
@@ -408,6 +506,7 @@ class SessionRuntime:
         self._current_assistant_id: str | None = None
         self._partials: dict[str, str] = {}
         self._assistant_modes: dict[str, str] = {}
+        self._cancelled_assistant_ids: set[str] = set()
         self._autonomous_enabled = bool(project.get("autonomous_enabled", False))
         self._autonomous_interval_s = _clamp_autonomous_interval(
             project.get("autonomous_interval_s", AUTONOMOUS_INTERVAL_S)
@@ -421,6 +520,11 @@ class SessionRuntime:
         self.history_path = os.path.join(base_dir, "temp", "project_messages", f"{self.project_id}.json")
         os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
         os.makedirs(os.path.dirname(self.history_path), exist_ok=True)
+        with self.lock:
+            messages = self._load_history_unlocked()
+            messages, changed = settle_stale_running_messages(messages)
+            if changed:
+                self._save_history_unlocked(messages)
 
         self._log_handle = open(self.log_path, "a", encoding="utf-8", errors="replace", buffering=1)
         self._log_handle.write(f"\n=== session subprocess starting {datetime.now().isoformat()} ===\n")
@@ -585,7 +689,11 @@ class SessionRuntime:
                 self._start_error = self._start_error or f"worker exited before ready (returncode={rc})"
                 self._ready.set()
             with self.lock:
-                if self.busy and self._current_assistant_id:
+                if (
+                    self.busy
+                    and self._current_assistant_id
+                    and self._current_assistant_id not in self._cancelled_assistant_ids
+                ):
                     self._update_message(
                         self._current_assistant_id,
                         content="会话进程已退出。",
@@ -605,6 +713,13 @@ class SessionRuntime:
             self._log(str(event.get("text") or ""))
             return
         assistant_id = str(event.get("assistant_id") or "")
+        if assistant_id:
+            with self.lock:
+                cancelled = assistant_id in self._cancelled_assistant_ids
+            if cancelled and kind in ("next", "done", "error"):
+                self._log(f"[assistant] ignored {kind} after cancel: {assistant_id}")
+                self._finish_assistant(assistant_id)
+                return
         if kind == "next" and assistant_id:
             chunk = str(event.get("text") or "")
             with self.lock:
@@ -663,6 +778,53 @@ class SessionRuntime:
             if self._current_assistant_id == assistant_id:
                 self._current_assistant_id = None
                 self.busy = False
+                if self.state == "cancelling" and self.is_alive():
+                    self.state = "running"
+
+    def _assistant_finished(self, assistant_id: str) -> bool:
+        with self.lock:
+            if self._current_assistant_id != assistant_id:
+                return True
+            for msg in self._load_history_unlocked():
+                if msg.get("id") == assistant_id:
+                    return msg.get("status") in ("done", "error", "aborted")
+        return False
+
+    def _mark_assistant_aborted(self, assistant_id: str) -> None:
+        with self.lock:
+            partial = self._partials.get(assistant_id, "")
+            mode = self._assistant_modes.get(assistant_id, "chat")
+            self._cancelled_assistant_ids.add(assistant_id)
+        extra = {"task": {"steps": _make_task_steps(mode, "aborted")}} if mode in ("task", "task_canvas") else None
+        self._update_message(
+            assistant_id,
+            content=_clean_reply(partial) if partial else "Stopped.",
+            status="aborted",
+            extra=extra,
+        )
+        self._finish_assistant(assistant_id)
+
+    def _force_stop_after_cancel(self) -> None:
+        self.closed = True
+        self.state = "stopping"
+        self._autonomous_stop.set()
+        with contextlib.suppress(Exception):
+            if self.proc.stdin is not None:
+                self.proc.stdin.close()
+        try:
+            self.proc.wait(timeout=CANCEL_KILL_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            if self.pid:
+                _kill_process_tree(self.pid)
+            with contextlib.suppress(Exception):
+                self.proc.kill()
+            with contextlib.suppress(Exception):
+                self.proc.wait(timeout=2)
+        self.state = "stopped"
+        self._unregister_process()
+        self._log(f"=== session subprocess cancelled {datetime.now().isoformat()} ===")
+        with contextlib.suppress(Exception):
+            self._log_handle.close()
 
     def _send_command(self, payload: dict[str, Any]) -> None:
         if self.proc.poll() is not None:
@@ -673,6 +835,18 @@ class SessionRuntime:
         with self._writer_lock:
             self.proc.stdin.write(raw)
             self.proc.stdin.flush()
+
+    def update_project(self, project: dict[str, Any]) -> None:
+        """Push refreshed project/runtime settings to the worker.
+
+        The worker applies this before the next user/autonomous turn. It does
+        not interrupt an in-flight request, which keeps model/config changes
+        predictable while still avoiding a session restart.
+        """
+        try:
+            self._send_command({"cmd": "update_context", "project": dict(project)})
+        except Exception as exc:
+            self._log(f"[runtime] update_context failed: {exc}")
 
     def _ensure_autonomous_thread(self) -> None:
         with self.lock:
@@ -735,6 +909,7 @@ class SessionRuntime:
             if not self._autonomous_enabled or self.busy:
                 return False
             self.busy = True
+            history_context = _build_history_context(self._load_history_unlocked())
         mode = "task_canvas"
         intent = _autonomous_intent()
         self._append_message(
@@ -767,6 +942,7 @@ class SessionRuntime:
                 "assistant_id": assistant_id,
                 "mode": mode,
                 "source": "autonomous",
+                "history_context": history_context,
             })
         except Exception:
             with self.lock:
@@ -783,7 +959,15 @@ class SessionRuntime:
 
     def messages(self) -> list[dict[str, Any]]:
         with self.lock:
-            return self._load_history_unlocked()
+            messages = self._load_history_unlocked()
+            active_assistant_id = self._current_assistant_id if self.busy else None
+            messages, changed = settle_stale_running_messages(
+                messages,
+                active_assistant_id=active_assistant_id,
+            )
+            if changed:
+                self._save_history_unlocked(messages)
+            return messages
 
     def send(self, text: str, requested_mode: str = "auto") -> dict[str, Any]:
         text = (text or "").strip()
@@ -795,6 +979,7 @@ class SessionRuntime:
             if self.busy:
                 raise RuntimeError("session is busy")
             self.busy = True
+            history_context = _build_history_context(self._load_history_unlocked())
         intent = _classify_intent(text, requested_mode)
         mode = str(intent["mode"])
         user_msg = self._append_message(
@@ -820,7 +1005,13 @@ class SessionRuntime:
             self._assistant_modes[assistant_msg["id"]] = mode
         self._log(f"[user] {text}")
         try:
-            self._send_command({"cmd": "send", "text": text, "assistant_id": assistant_msg["id"], "mode": mode})
+            self._send_command({
+                "cmd": "send",
+                "text": text,
+                "assistant_id": assistant_msg["id"],
+                "mode": mode,
+                "history_context": history_context,
+            })
         except Exception:
             with self.lock:
                 self.busy = False
@@ -831,9 +1022,37 @@ class SessionRuntime:
             raise
         return user_msg
 
-    def abort_current(self) -> None:
-        with contextlib.suppress(Exception):
-            self._send_command({"cmd": "abort", "assistant_id": self._current_assistant_id})
+    def abort_current(self, grace_s: float = CANCEL_GRACE_S) -> bool:
+        with self.lock:
+            assistant_id = self._current_assistant_id
+            if not self.busy or not assistant_id:
+                return False
+            self.state = "cancelling"
+
+        sent = True
+        try:
+            self._send_command({"cmd": "abort", "assistant_id": assistant_id})
+        except Exception as exc:
+            sent = False
+            self._log(f"[runtime] abort command failed: {exc}")
+
+        if sent and grace_s > 0:
+            deadline = time.monotonic() + grace_s
+            while time.monotonic() < deadline:
+                if self._assistant_finished(assistant_id):
+                    if self.is_alive():
+                        self.state = "running"
+                    return False
+                time.sleep(0.05)
+
+        if self._assistant_finished(assistant_id):
+            if self.is_alive():
+                self.state = "running"
+            return False
+
+        self._mark_assistant_aborted(assistant_id)
+        self._force_stop_after_cancel()
+        return True
 
     def close(self, timeout: float = STOP_TIMEOUT_S) -> None:
         if self.closed:

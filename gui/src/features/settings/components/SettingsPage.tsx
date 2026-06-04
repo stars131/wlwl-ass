@@ -20,9 +20,10 @@ export function SettingsPage(): JSX.Element {
   const patch = usePatchSettings();
 
   const [draft, setDraft] = useState<Settings | null>(null);
+  const [dirty, setDirty] = useState(false);
   useEffect(() => {
-    if (settings.data) setDraft(settings.data);
-  }, [settings.data]);
+    if (settings.data && !dirty) setDraft(settings.data);
+  }, [settings.data, dirty]);
 
   if (settings.isLoading) {
     return <p className="p-4 text-muted-foreground">{t('common.loading')}</p>;
@@ -37,18 +38,25 @@ export function SettingsPage(): JSX.Element {
 
   const update = <K extends keyof Settings>(k: K, v: Settings[K]) => {
     setDraft((d) => (d === null ? d : { ...d, [k]: v }));
+    setDirty(true);
   };
 
   const onSave = (e: React.FormEvent) => {
     e.preventDefault();
     if (!draft) return;
     patch.mutate(draft, {
-      onSuccess: (next) => setDraft(next),
+      onSuccess: (next) => {
+        setDraft(next);
+        setDirty(false);
+      },
     });
   };
 
   const onReset = () => {
-    if (settings.data) setDraft(settings.data);
+    if (settings.data) {
+      setDraft(settings.data);
+      setDirty(false);
+    }
   };
 
   return (
@@ -128,6 +136,9 @@ export function SettingsPage(): JSX.Element {
         ) : null}
         {patch.isSuccess ? (
           <span className="text-xs text-muted-foreground mr-auto">{t('common.saved')}</span>
+        ) : null}
+        {dirty && !patch.isPending ? (
+          <span className="text-xs text-muted-foreground mr-auto">有未保存更改</span>
         ) : null}
         <button
           type="button"

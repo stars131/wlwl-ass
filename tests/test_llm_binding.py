@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 from launcher.llm_binding import (  # noqa: E402
     parse_binding,
     resolve_to_config_names,
+    resolve_to_config_names_by_priority,
     synthesize_mixin_entry,
 )
 
@@ -82,6 +83,18 @@ def test_resolve_profile_happy_path_preserves_order():
     profiles = _profiles({"glm": ["glm", "grok", "grokciallo"]})
     out = resolve_to_config_names("profile", "glm", profiles, configs)
     assert out == ["glm", "grok", "grokciallo"]
+
+
+def test_resolve_profile_by_priority_uses_category_then_priority():
+    configs = [
+        {"name": "voice-high", "kind": "native_oai", "category": "voice", "priority": 100},
+        {"name": "language-low", "kind": "native_oai", "category": "language", "priority": 1},
+        {"name": "language-high", "kind": "native_oai", "category": "language", "priority": 8},
+        {"name": "multimodal", "kind": "native_oai", "category": "multimodal", "priority": 3},
+    ]
+    profiles = _profiles({"runtime": ["voice-high", "language-low", "multimodal", "language-high"]})
+    out = resolve_to_config_names_by_priority("profile", "runtime", profiles, configs)
+    assert out == ["language-high", "language-low", "multimodal", "voice-high"]
 
 
 def test_resolve_profile_drops_missing_member():

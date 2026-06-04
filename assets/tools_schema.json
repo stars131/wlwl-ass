@@ -129,6 +129,16 @@
       "required": ["to", "text"]}}
   },
   {"type": "function", "function": {
+    "name": "feishu_send",
+    "description": "Send a Feishu/Lark message via the configured Feishu bot OpenAPI. Use this for Feishu-originated requests such as 'send this to me', 'notify the current Feishu chat', or scheduled Feishu delivery. Outbound only. Side effects are real and irreversible. In a Feishu session, default to the current session context's receive_id and receive_id_type unless the user explicitly names another target.",
+    "parameters": {"type": "object", "properties": {
+      "to": {"type": "string", "description": "Feishu open_id (ou_xxx), chat_id (oc_xxx), or a cached display name. For chat_id set receive_id_type='chat_id'."},
+      "receive_id_type": {"type": "string", "enum": ["open_id", "chat_id"], "description": "Feishu receive_id_type. Use open_id for a person and chat_id for the current group/chat.", "default": "open_id"},
+      "text": {"type": "string", "description": "Plain-text message body."},
+      "files": {"type": "array", "items": {"type": "string"}, "description": "Optional list of local file paths to upload as Feishu attachments after the text."}},
+      "required": ["to", "text"]}}
+  },
+  {"type": "function", "function": {
     "name": "mcp_call",
     "description": "Single-entry gateway to every configured MCP (Model Context Protocol) server. Use this to access external capabilities the user has installed (filesystem servers, GitHub, databases, custom internal tools, etc.) without GA needing a dedicated tool for each. Three usage patterns: (1) Call with NO arguments to list all configured servers. (2) Call with only `server` set to list the tools that server exposes. (3) Call with `server`, `tool`, and `arguments` to actually invoke a tool. Always discover before invoking — server tool names and schemas are user-controlled and not knowable in advance. Returns plain text suitable for direct reading.",
     "parameters": {"type": "object", "properties": {

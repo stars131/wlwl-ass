@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { LanguageToggle } from '@/i18n/LanguageToggle';
 import { fetchHealth, fetchVersion } from '@/lib/api';
 import { useKeyboardShortcuts, type TabKey } from '@/lib/keyboard';
+import { useConfigEvents } from '@/lib/useConfigEvents';
 
 import { ApiConfigsPage } from './features/api-configs';
 import { ActivityPage } from './features/activity';
@@ -31,8 +32,8 @@ const TAB_KEYS: { key: TabKey; tKey: string; hotkey: string }[] = [
 /**
  * Phase 1 main shell + Milestone 1 polish.
  *
- * Six tabs (sessions, bots, api-configs, activity, skills, settings) on par
- * with the Qt launcher plus the new self-evolution surfaces. Header surfaces
+ * Six tabs (sessions, bots, api-configs, activity, skills, settings) plus
+ * the self-evolution surfaces. Header surfaces
  * backend health + version, theme toggle, language toggle, tab keyboard
  * shortcuts (Cmd/Ctrl+1..6, Cmd/Ctrl+, , Cmd/Ctrl+/).
  */
@@ -41,6 +42,7 @@ export function App(): JSX.Element {
   const [tab, setTab] = useState<TabKey>('sessions');
   const health = useQuery({ queryKey: ['health'], queryFn: fetchHealth, refetchInterval: 5000 });
   const version = useQuery({ queryKey: ['version'], queryFn: fetchVersion });
+  const configEvents = useConfigEvents();
 
   useKeyboardShortcuts(setTab);
 
@@ -81,6 +83,16 @@ export function App(): JSX.Element {
           <TokenUsageBadge />
           <LanguageToggle />
           <ThemeToggle />
+          <span
+            className="text-xs text-muted-foreground"
+            title={
+              configEvents.lastEvent
+                ? `config ${configEvents.lastEvent.scope} #${configEvents.lastEvent.epoch}`
+                : 'config live reload'
+            }
+          >
+            {configEvents.status === 'open' ? 'cfg live' : `cfg ${configEvents.status}`}
+          </span>
           <span className="text-xs text-muted-foreground" title={t('app.shortcutsHint')}>
             {health.isLoading ? t('app.status.connecting') : null}
             {health.error ? t('app.status.offline') : null}

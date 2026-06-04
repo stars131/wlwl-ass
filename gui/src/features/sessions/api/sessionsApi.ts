@@ -178,7 +178,7 @@ export async function listProjectCheckpoints(id: string): Promise<{ checkpoints:
 
 export async function setProjectLlm(
   id: string,
-  payload: { config_name?: string; llm_no?: number },
+  payload: { config_name?: string; profile_name?: string; llm_no?: number },
 ): Promise<Project> {
   const data = await request(
     `/api/projects/${encodeURIComponent(id)}/llm`,

@@ -61,8 +61,21 @@ def _route(url, *args, **kwargs):
 
 @pytest.fixture(autouse=True)
 def _set_keys(monkeypatch):
+    for name in (
+        "XAI_API_URL",
+        "XAI_BASE_URL",
+        "XAI_API_BASE_URL",
+        "GROK_API_URL",
+        "GROK_BASE_URL",
+        "GROK_API_BASE_URL",
+        "TAVILY_URL",
+        "TAVILY_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setenv("XAI_BASE_URL", "https://api.x.ai/v1")
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
+    monkeypatch.setenv("TAVILY_BASE_URL", "https://api.tavily.com")
 
 
 # ── happy path ──────────────────────────────────────────────────────
@@ -185,6 +198,24 @@ def test_grok_payload_has_search_parameters():
     assert sp["max_search_results"] == 8
 
 
+def test_grok_uses_configured_url(monkeypatch):
+    captured = {}
+    monkeypatch.setenv("XAI_API_URL", "https://proxy.example/grok/v1")
+
+    def _capture(url, *a, **kw):
+        if "proxy.example/grok" in url:
+            captured["grok_url"] = url
+            return _grok_ok()
+        if "tavily" in url:
+            return _tavily_ok()
+        raise AssertionError(f"unexpected URL: {url}")
+
+    with mock.patch.object(ws.requests, "post", side_effect=_capture):
+        ws.web_search("query")
+
+    assert captured["grok_url"] == "https://proxy.example/grok/v1/chat/completions"
+
+
 def test_tavily_payload_advanced_depth():
     captured = {}
     def _capture(url, *a, **kw):
@@ -198,6 +229,24 @@ def test_tavily_payload_advanced_depth():
     assert p["search_depth"] == "advanced"
     assert p["max_results"] == 10
     assert p["query"] == "query"
+
+
+def test_tavily_uses_configured_url(monkeypatch):
+    captured = {}
+    monkeypatch.setenv("TAVILY_BASE_URL", "https://proxy.example/api/tavily")
+
+    def _capture(url, *a, **kw):
+        if "proxy.example/api/tavily" in url:
+            captured["tavily_url"] = url
+            return _tavily_ok()
+        if "x.ai" in url:
+            return _grok_ok()
+        raise AssertionError(f"unexpected URL: {url}")
+
+    with mock.patch.object(ws.requests, "post", side_effect=_capture):
+        ws.web_search("query")
+
+    assert captured["tavily_url"] == "https://proxy.example/api/tavily/search"
 
 
 def test_tavily_max_results_clamped():

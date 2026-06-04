@@ -28,7 +28,7 @@ function makeReport(overrides: Record<string, unknown> = {}) {
     summary: { ok: 5, warn: 1, fail: 0, info: 2 },
     checks: [
       { id: 'python.version', title: 'Python 3.12', severity: 'ok', detail: '', fix: '' },
-      { id: 'deps.gui.PySide6', title: 'GUI: PySide6', severity: 'warn', detail: 'Missing — needed for Qt.', fix: 'pip install PySide6' },
+      { id: 'web.node', title: 'Web UI: node 20.11.1', severity: 'ok', detail: '', fix: '' },
     ],
     ...overrides,
   };
@@ -40,7 +40,7 @@ describe('doctorApi.fetchDoctor', () => {
     const data = await api.fetchDoctor();
     expect(data.summary.ok).toBe(5);
     expect(data.checks).toHaveLength(2);
-    expect(data.checks[1]!.fix).toBe('pip install PySide6');
+    expect(data.checks[1]!.id).toBe('web.node');
   });
 
   it('does not pass network query param by default', async () => {
@@ -66,11 +66,10 @@ describe('doctorApi.fetchDoctor', () => {
   });
 
   it('coerces missing severity counts to 0', async () => {
-    // Backend may omit severity buckets that are 0 — schema should default.
     globalThis.fetch = vi.fn().mockResolvedValue(
       jsonResponse({
         project_root: '/x',
-        summary: { ok: 1 }, // warn/fail/info missing
+        summary: { ok: 1 },
         checks: [],
       }),
     );

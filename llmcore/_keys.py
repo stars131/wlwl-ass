@@ -162,7 +162,7 @@ def _load_from_launcher_configs(project_root: str | None = None) -> tuple[dict, 
 
     try:
         from launcher.api_config import (
-            normalize_config,
+            prepare_api_configs,
             safe_config_var_name,
             validate_config,
             _config_payload,
@@ -174,10 +174,7 @@ def _load_from_launcher_configs(project_root: str | None = None) -> tuple[dict, 
     out: dict = {}
     used_var_names: set[str] = set()
     skipped: list[str] = []
-    for raw_cfg in configs:
-        if not isinstance(raw_cfg, dict):
-            continue
-        cfg = normalize_config(raw_cfg)
+    for cfg in prepare_api_configs(configs):
         ok, _msg = validate_config(cfg)
         if not ok:
             # Skip invalid entries — the launcher UI surfaces validation

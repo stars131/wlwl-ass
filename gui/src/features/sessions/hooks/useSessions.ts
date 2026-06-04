@@ -139,8 +139,15 @@ export function useActivateProject() {
 export function useSetProjectLlm() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { id: string; configName: string }) =>
-      setProjectLlm(vars.id, { config_name: vars.configName }),
+    mutationFn: (vars: { id: string; binding: string }) => {
+      if (vars.binding.startsWith('profile:')) {
+        return setProjectLlm(vars.id, { profile_name: vars.binding.slice('profile:'.length) });
+      }
+      if (vars.binding.startsWith('config:')) {
+        return setProjectLlm(vars.id, { config_name: vars.binding.slice('config:'.length) });
+      }
+      return setProjectLlm(vars.id, { config_name: '', profile_name: '' });
+    },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: PROJECTS_KEY });
     },

@@ -2,8 +2,9 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
 
-// Tauri expects fixed dev port; matches src-tauri/tauri.conf.json devUrl.
-const TAURI_DEV_PORT = 1420;
+const DEFAULT_WEB_PORT = 1420;
+const WEB_PORT = Number(process.env['VITE_WEB_PORT'] || DEFAULT_WEB_PORT);
+const IS_TAURI_DEV = process.env['TAURI_DEV'] === 'true';
 
 export default defineConfig({
   plugins: [react()],
@@ -13,14 +14,14 @@ export default defineConfig({
     },
   },
 
-  // Tauri/HMR settings
+  // Browser dev server / HMR settings
   clearScreen: false,
   server: {
-    port: TAURI_DEV_PORT,
-    strictPort: true,
+    port: WEB_PORT,
+    strictPort: IS_TAURI_DEV,
     host: '127.0.0.1',
     watch: {
-      // Don't fall over if Tauri rebuilds Rust target
+      // Ignore the optional desktop shell build output.
       ignored: ['**/src-tauri/**'],
     },
   },

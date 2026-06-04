@@ -33,6 +33,8 @@ function makeBot(overrides: Record<string, unknown> = {}) {
     missing_modules: [],
     running_self: false,
     running_external: false,
+    lock_port: 19532,
+    lock_holder_pid: null,
     running: false,
     auto_start: true,
     log_path: '/tmp/fsapp.log',
@@ -65,6 +67,17 @@ describe('botsApi', () => {
     globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ key: 'tg', message: '已停止' }));
     const r = await api.stopBot('tg');
     expect(r.message).toBe('已停止');
+  });
+
+  it('restartBot posts to /restart', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ key: 'feishu', message: '[stop] stopped | [start] 已启动' }),
+    );
+    globalThis.fetch = fetchMock;
+    const r = await api.restartBot('feishu');
+    expect(r.message).toContain('[start]');
+    expect(fetchMock.mock.calls[0]![0]).toBe('http://t.local/api/bots/feishu/restart');
+    expect(fetchMock.mock.calls[0]![1].method).toBe('POST');
   });
 
   it('getBotLog returns lines', async () => {

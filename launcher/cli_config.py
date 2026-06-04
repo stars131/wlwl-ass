@@ -93,11 +93,13 @@ def cmd_list(args) -> int:
             str(i),
             _short(c.get("name", ""), 28),
             c.get("kind", ""),
+            c.get("category", "language"),
+            str(c.get("priority", 0)),
             _short(c.get("apibase", ""), 50),
             _short(c.get("model", ""), 30),
             "yes" if c.get("apikey") else "-",
         ])
-    _print_table(rows, ["#", "name", "kind", "apibase", "model", "key"])
+    _print_table(rows, ["#", "name", "kind", "category", "priority", "apibase", "model", "key"])
     return 0
 
 
@@ -248,8 +250,7 @@ def cmd_remove(args) -> int:
 
 
 def cmd_use(args) -> int:
-    """Reorder so ``name`` is at index 0 — that's the default llm_no when
-    the agent next starts (or until the user `/llm`s elsewhere)."""
+    """Make ``name`` the highest-priority language config for next start."""
     base = _project_root()
     configs = api_config.load_api_configs(base)
     existing = _find_by_name(configs, args.name)
@@ -257,10 +258,15 @@ def cmd_use(args) -> int:
         print(f"[wlwl config] no such config: {args.name!r}", file=sys.stderr)
         return 1
     idx, row = existing
-    if idx == 0:
-        print(f"[wlwl config] {args.name!r} is already first.")
-        return 0
     configs.insert(0, configs.pop(idx))
+    row["category"] = "language"
+    row["priority"] = max(
+        [
+            int(c.get("priority") or 0)
+            for c in configs
+            if c is not row and c.get("category") == "language"
+        ] or [0],
+    ) + 1
     api_config.save_api_configs(base, configs)
     print(f"[wlwl config] {args.name!r} is now llm_no=0 for the next session.")
     return 0
@@ -360,10 +366,10 @@ def cmd_backups(args) -> int:
     return 0
 
 
-_TUNE_INT_FIELDS = {"max_tokens", "max_retries", "thinking_budget_tokens"}
+_TUNE_INT_FIELDS = {"max_tokens", "max_retries", "thinking_budget_tokens", "priority"}
 _TUNE_FLOAT_FIELDS = {"temperature", "connect_timeout", "read_timeout"}
 _TUNE_BOOL_FIELDS = {"stream", "fake_cc_system_prompt", "audio_capable", "image_capable"}
-_TUNE_STR_FIELDS = {"reasoning_effort", "thinking_type", "api_mode", "apibase", "model"}
+_TUNE_STR_FIELDS = {"reasoning_effort", "thinking_type", "api_mode", "apibase", "model", "category"}
 _TUNE_ALLOWED = (
     _TUNE_INT_FIELDS
     | _TUNE_FLOAT_FIELDS
@@ -427,6 +433,8 @@ def cmd_tune(args) -> int:
         except ValueError as exc:
             print(f"[wlwl config] {exc}", file=sys.stderr)
             return 2
+        if field == "category" and value:
+            value = str(value).strip().lower()
         if (
             field == "reasoning_effort"
             and value
@@ -457,6 +465,17 @@ def cmd_tune(args) -> int:
             print(
                 f"[wlwl config] api_mode must be one of "
                 f"{api_config.API_MODE_VALUES}, got {value!r}",
+                file=sys.stderr,
+            )
+            return 2
+        if (
+            field == "category"
+            and value
+            and value not in api_config.API_CONFIG_CATEGORIES
+        ):
+            print(
+                f"[wlwl config] category must be one of "
+                f"{api_config.API_CONFIG_CATEGORIES}, got {value!r}",
                 file=sys.stderr,
             )
             return 2
@@ -585,7 +604,8 @@ def build_subparser(subparsers):
             "Allowed: reasoning_effort, thinking_type, thinking_budget_tokens, "
             "temperature, max_tokens, max_retries, connect_timeout, read_timeout, "
             "stream, fake_cc_system_prompt, audio_capable, image_capable, "
-            "api_mode, apibase, model. Pass `field=` (empty value) to clear."
+            "api_mode, apibase, model, category, priority. "
+            "Pass `field=` (empty value) to clear."
         ),
     )
     p_tune.set_defaults(func=cmd_tune)

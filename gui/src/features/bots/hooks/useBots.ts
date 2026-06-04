@@ -1,6 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { getBotLog, getLlmOptions, installBotSdk, listBots, setBotLlmBinding, startBot, stopBot } from '../api/botsApi';
+import {
+  getBotLog,
+  getLlmOptions,
+  installBotSdk,
+  listBots,
+  restartBot,
+  setBotLlmBinding,
+  startBot,
+  stopBot,
+} from '../api/botsApi';
 
 const BOTS_KEY = ['bots', 'list'] as const;
 
@@ -27,6 +36,16 @@ export function useStopBot() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (key: string) => stopBot(key),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: BOTS_KEY });
+    },
+  });
+}
+
+export function useRestartBot() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (key: string) => restartBot(key),
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: BOTS_KEY });
     },

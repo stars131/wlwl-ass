@@ -24,6 +24,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 import sys
 import urllib.request
 import urllib.error
@@ -120,9 +121,7 @@ def check_core_deps() -> list[Check]:
     return out
 
 
-_GUI_DEPS = [
-    ("PySide6", "Qt legacy launcher (`launch.pyw --qt-legacy`)"),
-]
+_GUI_DEPS: list[tuple[str, str]] = []
 
 
 def check_gui_deps() -> list[Check]:
@@ -142,30 +141,78 @@ def check_gui_deps() -> list[Check]:
 
 
 def check_tauri_toolchain() -> list[Check]:
+    return check_web_toolchain()
+
+
+def _node_version(node: str) -> tuple[int, int, int] | None:
+    try:
+        proc = subprocess.run(
+            [node, "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3,
+            check=False,
+        )
+    except Exception:
+        return None
+    text = (proc.stdout or "").strip().lstrip("v")
+    parts = text.split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        major = int(parts[0])
+        minor = int(parts[1])
+        patch = int(parts[2]) if len(parts) > 2 else 0
+    except ValueError:
+        return None
+    return major, minor, patch
+
+
+def check_web_toolchain() -> list[Check]:
     out: list[Check] = []
-    npm = shutil.which("npm")
     node = shutil.which("node")
-    cargo = shutil.which("cargo")
-    if not npm or not node:
+    npm = shutil.which("npm")
+    if not node:
         out.append(Check(
-            "tauri.node",
-            "Tauri GUI: npm + node",
-            "warn",
-            "Tauri dev mode (default `python launch.pyw`) needs Node + npm. Falling back to Qt or webview.",
+            "web.node",
+            "Web UI: node",
+            "fail",
+            "The browser UI starts through Vite and requires Node.js >= 20.9.",
             "Install Node 20+: https://nodejs.org",
         ))
     else:
-        out.append(Check("tauri.node", f"Tauri GUI: npm ({npm})", "ok"))
-    if not cargo:
+        version = _node_version(node)
+        if version is None:
+            out.append(Check(
+                "web.node",
+                f"Web UI: node ({node})",
+                "warn",
+                "Node is on PATH, but `node --version` could not be parsed.",
+                "Run `node --version`; install Node 20+ if it is older than 20.9.",
+            ))
+        elif version < (20, 9, 0):
+            out.append(Check(
+                "web.node",
+                f"Web UI: node {version[0]}.{version[1]}.{version[2]}",
+                "fail",
+                "gui/package.json requires Node.js >= 20.9.0.",
+                "Install Node 20+: https://nodejs.org",
+            ))
+        else:
+            out.append(Check("web.node", f"Web UI: node {version[0]}.{version[1]}.{version[2]}", "ok"))
+    if not npm:
         out.append(Check(
-            "tauri.rust",
-            "Tauri GUI: cargo (Rust)",
-            "warn",
-            "Tauri dev mode needs the Rust toolchain to compile the shell binary.",
-            "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+            "web.npm",
+            "Web UI: npm",
+            "fail",
+            "npm is required to install and run the React browser UI.",
+            "Install Node 20+: https://nodejs.org",
         ))
     else:
-        out.append(Check("tauri.rust", f"Tauri GUI: cargo ({cargo})", "ok"))
+        out.append(Check("web.npm", f"Web UI: npm ({npm})", "ok"))
     return out
 
 
@@ -211,14 +258,14 @@ def check_llm_config() -> list[Check]:
             "Only placeholder keys",
             "fail",
             f"Found {len(placeholders)} session(s) but every apikey looks like a template placeholder.",
-            "Open the GUI's API Config tab to add a real key, "
+            "Open the Web UI's API Config tab to add a real key, "
             "or edit ~/.wlwl-ass/config.json directly.",
         ))
     else:
         out.append(Check(
             "llm.config", "No usable LLM config", "fail",
             "No API key found in shell env / .env / ~/.wlwl-ass/config.json / temp/launcher_api_configs.json.",
-            "Launch the Tauri GUI (start_from_zero.cmd or `python launch.pyw`) "
+            "Launch the browser Web UI (start_from_zero.cmd or `python launch.pyw`) "
             "and add an entry under the API Config tab.",
         ))
     return out
@@ -240,13 +287,13 @@ def check_bots() -> list[Check]:
             packages = " ".join(_pip_name(m) for m in missing_modules)
             out.append(Check(
                 f"bot.{key}", f"bot {spec.display_name}: disabled by default", "info",
-                "Optional. It will not auto-start on GUI launch; start it manually from the Bots tab when needed.",
+                "Optional. It will not auto-start on Web UI launch; start it manually from the Bots tab when needed.",
                 f"pip install {packages}" if packages else None,
             ))
         elif not configured and not missing_modules:
             out.append(Check(
                 f"bot.{key}", f"bot {spec.display_name}: not configured", "info",
-                f"Optional. Set {', '.join(spec.mykey_fields)} via the GUI's Bots tab "
+                f"Optional. Set {', '.join(spec.mykey_fields)} via the Web UI's Bots tab "
                 f"or `python -m launcher.config set bots.{key}.<field> ...` to enable.",
             ))
         elif not configured:
@@ -430,8 +477,7 @@ def run_diagnostics(*, include_network: bool = False) -> dict[str, Any]:
     groups: list[tuple[str, CheckFn]] = [
         ("python_version", check_python_version),
         ("core_deps", check_core_deps),
-        ("gui_deps", check_gui_deps),
-        ("tauri_toolchain", check_tauri_toolchain),
+        ("web_toolchain", check_web_toolchain),
         ("llm_config", check_llm_config),
         ("bots", check_bots),
         ("paths", check_paths),

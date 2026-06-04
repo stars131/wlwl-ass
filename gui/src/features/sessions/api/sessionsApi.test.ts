@@ -33,6 +33,7 @@ function makeProject(overrides: Record<string, unknown> = {}) {
     description: '',
     llm_no: 0,
     llm_config_name: '',
+    llm_profile_name: '',
     ...overrides,
   };
 }
@@ -68,6 +69,20 @@ describe('sessionsApi', () => {
     expect(call[0]).toBe('http://t.local/api/projects/p_x/llm');
     expect(call[1].method).toBe('PUT');
     expect(JSON.parse(call[1].body as string)).toEqual({ config_name: 'gpt-native' });
+  });
+
+  it('setProjectLlm posts profile_name', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ project: makeProject({ llm_profile_name: 'daily' }) }),
+    );
+    globalThis.fetch = fetchMock;
+    const project = await api.setProjectLlm('p_x', { profile_name: 'daily' });
+    expect(project.llm_profile_name).toBe('daily');
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe('http://t.local/api/projects/p_x/llm');
+    expect(call[1].method).toBe('PUT');
+    expect(JSON.parse(call[1].body as string)).toEqual({ profile_name: 'daily' });
   });
 
   it('setProjectLlm posts llm_no', async () => {
@@ -148,6 +163,29 @@ describe('sessionsApi', () => {
       text: 'run tests',
       mode: 'task',
     });
+  });
+
+  it('abortProjectMessage posts to the abort endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        running: true,
+        messages: [{
+          id: 'm_2',
+          seq: 2,
+          role: 'assistant',
+          content: 'partial',
+          status: 'aborted',
+          created_at: '2026-01-01T00:00:01',
+        }],
+      }),
+    );
+    globalThis.fetch = fetchMock;
+    const data = await api.abortProjectMessage('p_x');
+
+    expect(data.messages[0]!.status).toBe('aborted');
+    expect(fetchMock.mock.calls[0]![0]).toBe('http://t.local/api/projects/p_x/messages/abort');
+    expect(fetchMock.mock.calls[0]![1].method).toBe('POST');
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body as string)).toEqual({});
   });
 
   it('listApiConfigs unwraps the configs array', async () => {

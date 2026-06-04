@@ -1,4 +1,4 @@
-"""HTTP API server for the wlwl-ass GUI (Tauri webview).
+"""HTTP API server for the wlwl-ass browser Web UI.
 
 Phase 0 ships /api/health, /api/version, /api/openapi.json.
 
@@ -15,7 +15,7 @@ Phase 1 adds business endpoints backed by ProjectManager / api_config:
   POST   /api/projects/<id>/activate       -> mark as last-active
   POST   /api/projects/<id>/pin            -> body: {pinned: bool}
   PATCH  /api/projects/<id>                -> body: {name?: str}  (rename)
-  PUT    /api/projects/<id>/llm            -> body: {config_name?: str, llm_no?: int}
+  PUT    /api/projects/<id>/llm            -> body: {config_name?: str, profile_name?: str, llm_no?: int}
                                               ADR-0006 per-session API selection.
 
   GET    /api/configs                      -> list api_config entries (apikey masked)
@@ -42,16 +42,18 @@ import time
 from typing import Any, Callable
 from urllib.parse import unquote, urlparse
 
+from launcher.session_runtime import settle_stale_running_messages
+
 API_VERSION = "v1"
 APP_VERSION = "0.1.0"
 READY_MARKER = "__GA_READY__"
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-# Origins the desktop GUI legitimately uses. Anything else is refused CORS
+# Origins the local Web UI legitimately uses. Anything else is refused CORS
 # unless WLWL_API_AUTH_TOKEN is set (in which case the bearer gate vets it).
-# tauri.localhost / tauri://localhost cover Tauri WebView2 / WRY on Windows
-# and Linux; localhost:<port> covers ``vite dev`` and a few embedded tools.
+# localhost:<port> covers the browser UI and Vite dev server. tauri.localhost
+# remains allow-listed for older embedded builds.
 _ALLOWED_ORIGIN_HOSTS = {
     "localhost", "127.0.0.1", "tauri.localhost",
 }
@@ -81,6 +83,13 @@ _scheduler_proc: subprocess.Popen | None = None  # L4 reflect/scheduler.py child
 _httpd: "_ThreadingServer | None" = None
 _shutdown_started = False
 _shutdown_lock = threading.Lock()
+_config_epoch = 0
+_config_lock = threading.Lock()
+_config_last_event: dict[str, Any] = {
+    "epoch": 0,
+    "scope": "startup",
+    "changed_at": time.time(),
+}
 
 
 # ─── Lazy backend wiring ───────────────────────────────────────────────
@@ -107,6 +116,83 @@ def _bm():
         from launcher.bot_manager import BotManager
         _bot_manager = BotManager(_project_root())
     return _bot_manager
+
+
+# ─── Config change tracking / hot reload ───────────────────────────────
+
+
+def _config_watch_paths() -> list[str]:
+    """Files whose changes should refresh the browser UI.
+
+    This covers launcher-managed API configs/profiles/options plus the
+    canonical credentials store. The SSE endpoint below compares mtime+size so
+    manual edits outside the web UI also trigger a refresh.
+    """
+    root = _project_root()
+    paths = [
+        os.path.join(root, ".env"),
+        os.path.join(root, "temp", "launcher_api_configs.json"),
+        os.path.join(root, "temp", "launcher_profiles.json"),
+        os.path.join(root, "temp", "launcher_options.json"),
+    ]
+    try:
+        from launcher import config_store as _cs
+
+        paths.append(_cs.project_config_path(root))
+        paths.append(_cs.user_config_path())
+    except Exception:
+        paths.append(os.path.join(root, ".wlwl-ass", "config.json"))
+        paths.append(os.path.join(os.path.expanduser("~"), ".wlwl-ass", "config.json"))
+    # Preserve order while dropping duplicates.
+    seen: set[str] = set()
+    out: list[str] = []
+    for path in paths:
+        full = os.path.abspath(path)
+        if full not in seen:
+            seen.add(full)
+            out.append(full)
+    return out
+
+
+def _config_files_signature() -> tuple[tuple[str, int | None, int | None], ...]:
+    rows: list[tuple[str, int | None, int | None]] = []
+    for path in _config_watch_paths():
+        try:
+            st = os.stat(path)
+            rows.append((path, int(st.st_mtime_ns), int(st.st_size)))
+        except OSError:
+            rows.append((path, None, None))
+    return tuple(rows)
+
+
+def _mark_config_changed(scope: str) -> dict[str, Any]:
+    global _config_epoch, _config_last_event
+    with _config_lock:
+        _config_epoch += 1
+        _config_last_event = {
+            "epoch": _config_epoch,
+            "scope": scope,
+            "changed_at": time.time(),
+        }
+        return dict(_config_last_event)
+
+
+def _config_event_snapshot() -> dict[str, Any]:
+    with _config_lock:
+        return dict(_config_last_event)
+
+
+def _route_config_state(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    event = _config_event_snapshot()
+    return 200, {
+        "epoch": event.get("epoch", 0),
+        "scope": event.get("scope", "startup"),
+        "changed_at": event.get("changed_at", 0),
+        "watched": [
+            {"path": path, "exists": mtime is not None, "size": size}
+            for path, mtime, size in _config_files_signature()
+        ],
+    }
 
 
 # ─── Route handlers ────────────────────────────────────────────────────
@@ -235,7 +321,18 @@ def _load_project_messages(project_id: str) -> list[dict[str, Any]]:
     except Exception:
         return []
     messages = data.get("messages") if isinstance(data, dict) else None
-    return messages if isinstance(messages, list) else []
+    if not isinstance(messages, list):
+        return []
+    messages, changed = settle_stale_running_messages(messages)
+    if changed:
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"messages": messages}, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        except Exception:
+            pass
+    return messages
 
 
 def _route_project_messages(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -254,7 +351,13 @@ def _route_project_send_message(req: dict[str, Any]) -> tuple[int, dict[str, Any
         return 404, {"error": "not_found", "id": pid}
     runtime = _pm().session(pid)
     if not runtime:
-        return 409, {"error": "not_running", "detail": "start the session before sending messages"}
+        try:
+            _pm().start(pid)
+            runtime = _pm().session(pid)
+        except Exception as exc:
+            return 500, {"error": "start_failed", "detail": str(exc)}
+        if not runtime:
+            return 500, {"error": "start_failed", "detail": "session did not become available"}
     body = req.get("body") or {}
     text = str(body.get("text") or "").strip()
     mode = str(body.get("mode") or "auto").strip() or "auto"
@@ -274,10 +377,9 @@ def _route_project_abort_message(req: dict[str, Any]) -> tuple[int, dict[str, An
     pid = req["params"]["id"]
     if not _pm().get(pid):
         return 404, {"error": "not_found", "id": pid}
-    runtime = _pm().session(pid)
+    runtime = _pm().abort_current_message(pid)
     if not runtime:
         return 409, {"error": "not_running"}
-    runtime.abort_current()
     return 200, {"messages": runtime.messages(), "running": True}
 
 
@@ -313,14 +415,15 @@ def _route_project_patch(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
 
 def _route_project_set_llm(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-    """ADR-0006: PUT /api/projects/<id>/llm with {config_name?, llm_no?}."""
+    """ADR-0006: PUT /api/projects/<id>/llm with {config_name?, profile_name?, llm_no?}."""
     pid = req["params"]["id"]
     body = req["body"]
     config_name = body.get("config_name")
+    profile_name = body.get("profile_name")
     llm_no = body.get("llm_no")
-    if config_name is None and llm_no is None:
-        return 400, {"error": "missing_field", "expected": "config_name or llm_no"}
-    updated = _pm().set_llm(pid, config_name=config_name, llm_no=llm_no)
+    if config_name is None and profile_name is None and llm_no is None:
+        return 400, {"error": "missing_field", "expected": "config_name, profile_name, or llm_no"}
+    updated = _pm().set_llm(pid, config_name=config_name, profile_name=profile_name, llm_no=llm_no)
     if updated is None:
         return 404, {"error": "not_found", "id": pid}
     return 200, {"project": _pm().get(pid)}
@@ -344,6 +447,7 @@ def _route_configs_save(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         save_api_configs(_project_root(), incoming)
     except ValueError as exc:
         return 400, {"error": "invalid_config", "detail": str(exc)}
+    _mark_config_changed("api-configs")
     # Return through list_api_configs so apikey is masked, matching GET path.
     return 200, {"configs": list_api_configs(_project_root())}
 
@@ -359,7 +463,9 @@ def _route_profiles_set_active(req: dict[str, Any]) -> tuple[int, dict[str, Any]
 
     body = req.get("body") or {}
     name = body.get("name")
-    return 200, set_active_profile(_project_root(), str(name) if name is not None else None)
+    result = set_active_profile(_project_root(), str(name) if name is not None else None)
+    _mark_config_changed("profiles")
+    return 200, result
 
 
 def _route_profiles_upsert(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -371,7 +477,9 @@ def _route_profiles_upsert(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     if not isinstance(members, list):
         members = []
     try:
-        return 200, upsert_profile(_project_root(), name, members)
+        result = upsert_profile(_project_root(), name, members)
+        _mark_config_changed("profiles")
+        return 200, result
     except ValueError as exc:
         return 400, {"error": "invalid_profile", "detail": str(exc)}
 
@@ -382,7 +490,9 @@ def _route_profiles_rename(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     old_name = unquote(req["params"]["name"])
     new_name = str((req.get("body") or {}).get("new_name") or "").strip()
     try:
-        return 200, rename_profile(_project_root(), old_name, new_name)
+        result = rename_profile(_project_root(), old_name, new_name)
+        _mark_config_changed("profiles")
+        return 200, result
     except KeyError:
         return 404, {"error": "not_found", "name": old_name}
     except ValueError as exc:
@@ -394,7 +504,9 @@ def _route_profiles_delete(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
     name = unquote(req["params"]["name"])
     try:
-        return 200, delete_profile(_project_root(), name)
+        result = delete_profile(_project_root(), name)
+        _mark_config_changed("profiles")
+        return 200, result
     except KeyError:
         return 404, {"error": "not_found", "name": name}
 
@@ -416,6 +528,8 @@ def _route_settings_put(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     # Merge over existing so the UI can send partial updates.
     merged = {**load_options(_project_root()), **body}
     saved = save_options(_project_root(), merged)
+    _sync_scheduler_after_settings(saved)
+    _mark_config_changed("settings")
     return 200, {"settings": saved}
 
 
@@ -574,6 +688,8 @@ def _route_credentials_put(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         else:
             store.delete_bot(bot_name, layer="user")
 
+    if by_bot or deletes:
+        _mark_config_changed("credentials")
     return _route_credentials_get(req)
 
 
@@ -597,6 +713,7 @@ def _route_bots_list(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             "running_self": st.running_self,
             "running_external": st.running_external,
             "running": st.running,
+            "lock_port": spec.lock_port,
             "lock_holder_pid": st.lock_holder_pid,
             "auto_start": spec.auto_start,
             "log_path": st.log_path,
@@ -661,6 +778,7 @@ def _route_bot_set_llm(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
             return 400, {"error": "invalid_binding_syntax",
                          "detail": "must be empty, 'config:<name>', or 'profile:<name>'"}
     default_store().set_bot(key, {"llm_binding": binding}, merge=True)
+    _mark_config_changed("bot-llm")
     return 200, {
         "key": key,
         "binding": binding,
@@ -1168,6 +1286,7 @@ def _route_onboarding_save(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         result = _ob.save_minimal(provider, apikey=apikey, base_url=base_url, model=model)
     except ValueError as exc:
         return 400, {"error": str(exc)}
+    _mark_config_changed("onboarding")
     return 200, result
 
 
@@ -1455,9 +1574,6 @@ def _route_skills_proposals_preview(req: dict[str, Any]) -> tuple[int, dict[str,
     return 200, _ssi.preview_patch(pid)
 
 
-# ─── Ecosystem Radar ──────────────────────────────────────────────────
-
-
 def _route_playbook_list(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     from launcher import playbook as _pb
 
@@ -1502,6 +1618,178 @@ def _route_playbook_decide(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     else:
         ok, msg = _pb.reject(entry_id, note=note)
     return (200 if ok else 404), {"ok": ok, "message": msg}
+
+
+# ─── Ecosystem Radar ──────────────────────────────────────────────────
+
+
+def _split_radar_watchlist(value: Any) -> list[str]:
+    if isinstance(value, list):
+        raw = [str(v).strip() for v in value]
+    else:
+        raw = [s.strip() for s in str(value or "").replace("\n", ",").split(",")]
+    return [s for s in raw if s and "/" in s][:20]
+
+
+def _read_radar_config() -> dict[str, Any]:
+    from launcher import radar_control
+    from launcher.config_store import default_store
+
+    store = default_store()
+    radar = store.get("settings.radar", {})
+    if not isinstance(radar, dict):
+        radar = {}
+    tavily = store.get("settings.tavily", {})
+    if not isinstance(tavily, dict):
+        tavily = {}
+    grok = store.get_provider("grok")
+    feishu = store.get_bot("feishu")
+
+    grok_key = (
+        radar_control._env_get("XAI_API_KEY") or str(grok.get("api_key") or "").strip()
+    )
+    grok_url = (
+        radar_control._env_get("XAI_API_URL")
+        or radar_control._env_get("XAI_BASE_URL")
+        or radar_control._env_get("XAI_API_BASE_URL")
+        or radar_control._env_get("GROK_API_URL")
+        or radar_control._env_get("GROK_BASE_URL")
+        or radar_control._env_get("GROK_API_BASE_URL")
+        or str(
+            grok.get("url")
+            or grok.get("base_url")
+            or grok.get("apibase")
+            or "https://api.x.ai/v1"
+        ).strip()
+    )
+    tavily_key = (
+        radar_control._env_get("TAVILY_API_KEY") or str(tavily.get("api_key") or "").strip()
+    )
+    tavily_url = (
+        radar_control._env_get("TAVILY_URL")
+        or radar_control._env_get("TAVILY_BASE_URL")
+        or str(tavily.get("url") or tavily.get("base_url") or "https://api.tavily.com/search").strip()
+    )
+    feishu_app_id = (
+        radar_control._env_get("FS_APP_ID")
+        or str(feishu.get("app_id") or "").strip()
+        or radar_control._mykey_get("fs_app_id")
+    )
+    feishu_app_secret = (
+        radar_control._env_get("FS_APP_SECRET")
+        or str(feishu.get("app_secret") or "").strip()
+        or radar_control._mykey_get("fs_app_secret")
+    )
+    notify_to = (
+        radar_control._env_get("WLWL_RADAR_NOTIFY_TO")
+        or str(radar.get("notify_to") or "").strip()
+        or radar_control._mykey_get("radar_notify_to")
+    )
+    quiet_hours = (
+        radar_control._env_get("WLWL_RADAR_QUIET_HOURS")
+        or str(radar.get("quiet_hours") or "22-8").strip()
+    )
+    env_watchlist = radar_control._env_get("WLWL_RADAR_WATCHLIST")
+    if env_watchlist:
+        watchlist = _split_radar_watchlist(env_watchlist)
+    elif "watchlist" in radar:
+        watchlist = _split_radar_watchlist(radar.get("watchlist"))
+    else:
+        watchlist = radar_control._default_watchlist()
+    return {
+        "feishu_app_id": "***" if feishu_app_id else "",
+        "feishu_app_secret": "***" if feishu_app_secret else "",
+        "notify_to": notify_to,
+        "quiet_hours": quiet_hours,
+        "watchlist": watchlist,
+        "grok_api_key": "***" if grok_key else "",
+        "grok_url": grok_url,
+        "grok_model": str(grok.get("model") or "grok-4-fast-reasoning").strip(),
+        "tavily_api_key": "***" if tavily_key else "",
+        "tavily_url": tavily_url,
+    }
+
+
+def _route_radar_config_get(_req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """GET /api/radar/config — radar-only editable settings, secrets masked."""
+    from launcher import radar_control
+
+    return 200, {
+        "config": _read_radar_config(),
+        "status": radar_control.status(log_lines=0),
+    }
+
+
+def _route_radar_config_put(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """PUT /api/radar/config — write radar API/source settings.
+
+    Body fields:
+      feishu_app_id, feishu_app_secret, notify_to, quiet_hours, watchlist,
+      grok_api_key, grok_url, grok_model, tavily_api_key, tavily_url. Secret
+      value "***" preserves the stored key.
+    """
+    from launcher import radar_control
+    from launcher.config_store import default_store
+
+    body = req.get("body") or {}
+    if not isinstance(body, dict):
+        return 400, {"error": "invalid_body"}
+
+    store = default_store()
+
+    radar = store.get("settings.radar", {})
+    if not isinstance(radar, dict):
+        radar = {}
+    radar_update: dict[str, Any] = {}
+    if "notify_to" in body:
+        radar_update["notify_to"] = str(body.get("notify_to") or "").strip()
+    if "quiet_hours" in body:
+        radar_update["quiet_hours"] = str(body.get("quiet_hours") or "").strip() or "22-8"
+    if "watchlist" in body:
+        radar_update["watchlist"] = _split_radar_watchlist(body.get("watchlist"))
+    if radar_update:
+        store.set_setting("radar", {**radar, **radar_update})
+
+    feishu_update: dict[str, Any] = {}
+    if "feishu_app_id" in body and body.get("feishu_app_id") != "***":
+        feishu_update["app_id"] = str(body.get("feishu_app_id") or "").strip()
+    if "feishu_app_secret" in body and body.get("feishu_app_secret") != "***":
+        feishu_update["app_secret"] = str(body.get("feishu_app_secret") or "").strip()
+    if feishu_update:
+        store.set_bot("feishu", feishu_update, merge=True)
+
+    grok_update: dict[str, Any] = {}
+    if "grok_api_key" in body and body.get("grok_api_key") != "***":
+        grok_update["api_key"] = str(body.get("grok_api_key") or "").strip()
+    if "grok_model" in body:
+        grok_update["model"] = str(body.get("grok_model") or "").strip() or "grok-4-fast-reasoning"
+    if "grok_url" in body:
+        grok_update["base_url"] = str(body.get("grok_url") or "").strip() or "https://api.x.ai/v1"
+    if grok_update:
+        current_grok = store.get_provider("grok")
+        grok_update.setdefault("kind", "native_oai")
+        if not any(current_grok.get(k) for k in ("base_url", "url", "apibase")):
+            grok_update.setdefault("base_url", "https://api.x.ai/v1")
+        store.set_provider("grok", grok_update, merge=True)
+
+    if (
+        ("tavily_api_key" in body and body.get("tavily_api_key") != "***")
+        or "tavily_url" in body
+    ):
+        tavily = store.get("settings.tavily", {})
+        if not isinstance(tavily, dict):
+            tavily = {}
+        if "tavily_api_key" in body and body.get("tavily_api_key") != "***":
+            tavily["api_key"] = str(body.get("tavily_api_key") or "").strip()
+        if "tavily_url" in body:
+            tavily["url"] = str(body.get("tavily_url") or "").strip() or "https://api.tavily.com/search"
+        store.set_setting("tavily", tavily)
+
+    _mark_config_changed("radar-config")
+    return 200, {
+        "config": _read_radar_config(),
+        "status": radar_control.status(log_lines=0),
+    }
 
 
 def _route_radar_status(req: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -1670,6 +1958,7 @@ ROUTES: list[tuple[str, str, Callable[[dict[str, Any]], tuple[int, dict[str, Any
     ("GET", "/api/health", _route_health),
     ("GET", "/api/version", _route_version),
     ("GET", "/api/openapi.json", _route_openapi),
+    ("GET", "/api/config/state", _route_config_state),
     ("GET", "/api/projects", _route_projects_list),
     ("POST", "/api/projects", _route_projects_create),
     ("GET", "/api/projects/<id>", _route_project_get),
@@ -1741,6 +2030,8 @@ ROUTES: list[tuple[str, str, Callable[[dict[str, Any]], tuple[int, dict[str, Any
     ("POST", "/api/playbook", _route_playbook_create),
     ("POST", "/api/playbook/<entry_id>/decide", _route_playbook_decide),
     ("GET", "/api/radar/status", _route_radar_status),
+    ("GET", "/api/radar/config", _route_radar_config_get),
+    ("PUT", "/api/radar/config", _route_radar_config_put),
     ("POST", "/api/radar/start", _route_radar_start),
     ("POST", "/api/radar/stop", _route_radar_stop),
 ]
@@ -1934,6 +2225,46 @@ def _stream_activity(handler: "_Handler", params: dict[str, str]) -> None:
     _tail_log_file(handler, _alog.latest_path())
 
 
+@_sse_route("/api/config/events")
+def _stream_config_events(handler: "_Handler", params: dict[str, str]) -> None:
+    """Push config-change notifications to the browser UI.
+
+    UI saves call ``_mark_config_changed`` directly. This stream also watches
+    the relevant config files' mtime/size so hand-edits to .env or JSON stores
+    are reflected without a browser refresh.
+    """
+    _send_sse_headers(handler)
+    last_sig = _config_files_signature()
+    sent_epoch = -1
+    deadline = time.monotonic() + 24 * 60 * 60
+    last_beat = 0.0
+
+    while time.monotonic() < deadline:
+        event = _config_event_snapshot()
+        epoch = int(event.get("epoch") or 0)
+        if epoch != sent_epoch:
+            if not _send_sse(handler, json.dumps(event, ensure_ascii=False), event="config"):
+                return
+            sent_epoch = epoch
+
+        sig = _config_files_signature()
+        if sig != last_sig:
+            last_sig = sig
+            event = _mark_config_changed("files")
+            if not _send_sse(handler, json.dumps(event, ensure_ascii=False), event="config"):
+                return
+            sent_epoch = int(event.get("epoch") or sent_epoch)
+
+        now = time.monotonic()
+        if now - last_beat > 25.0:
+            if not _send_sse(handler, "ping", event="heartbeat"):
+                return
+            last_beat = now
+        time.sleep(1.0)
+
+    _send_sse(handler, json.dumps({"reason": "max_seconds"}), event="end")
+
+
 def _match_sse(path: str):
     for pattern, fn in SSE_ROUTES:
         params = _match_pattern(pattern, path)
@@ -1985,14 +2316,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def _send_json(self, payload: Any, status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", self._cors_origin())
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", self._cors_origin())
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError):
+            return
 
     def do_OPTIONS(self) -> None:
         self.send_response(204)
@@ -2216,6 +2550,25 @@ def _auto_start_scheduler() -> None:
     except Exception as exc:
         print(f"[api_server] scheduler spawn failed: {exc}", flush=True)
         _scheduler_proc = None
+
+
+def _sync_scheduler_after_settings(settings: dict[str, Any]) -> None:
+    """Apply the scheduler toggle immediately after /api/settings writes."""
+    global _scheduler_proc
+    enabled = bool((settings or {}).get("scheduler", True))
+    if enabled:
+        _auto_start_scheduler()
+        return
+    if _scheduler_proc is not None and _scheduler_proc.poll() is None:
+        try:
+            _scheduler_proc.terminate()
+            try:
+                _scheduler_proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                _scheduler_proc.kill()
+        except Exception as exc:
+            print(f"[api_server] scheduler stop failed: {exc}", flush=True)
+    _scheduler_proc = None
 
 
 def _cleanup_registered_processes() -> None:

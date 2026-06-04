@@ -1,10 +1,9 @@
 /**
  * Resolve the Python backend base URL.
  *
- * In production (Tauri shell), the Rust side spawns `launcher.api_server` on
- * a free port and injects the URL into `window.__GA_API_BASE__` before the
- * React app boots. In `vite dev` (browser-only), we fall back to a known port
- * the developer can run manually with `python -m launcher.api_server`.
+ * The web launcher starts `launcher.api_server` on a local port and passes
+ * that URL through `VITE_GA_API_BASE`. In standalone Vite dev, fall back to
+ * the default API port the developer can run manually.
  */
 
 declare global {

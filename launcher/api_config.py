@@ -19,6 +19,8 @@ CONFIG_FILE = "launcher_api_configs.json"
 BACKUPS_DIR = "backups"
 MAX_BACKUPS = 10  # mirrors cc-switch's rotation policy
 SUPPORTED_KINDS = {"native_oai", "native_claude", "mixin"}
+API_CONFIG_CATEGORIES = ("language", "multimodal", "voice", "utility")
+API_CONFIG_CATEGORY_ORDER = {name: i for i, name in enumerate(API_CONFIG_CATEGORIES)}
 REQUIRED_FIELDS = {
     "native_oai": ("name", "apikey", "apibase", "model"),
     "native_claude": ("name", "apikey", "apibase", "model"),
@@ -30,6 +32,8 @@ KIND_PREFIX = {
     "mixin": "mixin_config",
 }
 COMMON_OPTIONAL_FIELDS = (
+    "category",
+    "priority",
     "api_mode",
     "stream",
     "max_tokens",
@@ -149,7 +153,7 @@ def load_api_configs(base_dir):
     except Exception:
         return []
     configs = data.get("configs", data if isinstance(data, list) else [])
-    return [normalize_config(c) for c in configs if isinstance(c, dict)]
+    return prepare_api_configs(configs)
 
 
 def save_api_configs(base_dir, configs):
@@ -174,7 +178,7 @@ def save_api_configs(base_dir, configs):
             if prev and prev.get("apikey") and prev["apikey"] != "***":
                 c["apikey"] = prev["apikey"]
         sanitized.append(c)
-    normalized = [normalize_config(c) for c in sanitized]
+    normalized = prepare_api_configs(sanitized)
     for config in normalized:
         ok, msg = validate_config(config)
         if not ok:
@@ -211,10 +215,12 @@ def normalize_config(config):
     c["kind"] = str(c.get("kind") or "native_oai").strip()
     c["name"] = str(c.get("name") or "").strip()
     if c["kind"] == "mixin" and isinstance(c.get("llm_nos"), str):
-        c["llm_nos"] = [int(x.strip()) for x in c["llm_nos"].split(",") if x.strip().isdigit()]
+        c["llm_nos"] = [_parse_llm_ref(x.strip()) for x in c["llm_nos"].split(",") if x.strip()]
     for key in ("stream", "fake_cc_system_prompt", "audio_capable", "image_capable"):
         if isinstance(c.get(key), str):
             c[key] = c[key].strip().lower() in {"1", "true", "yes", "on"}
+    c["category"] = infer_config_category(c)
+    c["priority"] = normalize_priority(c.get("priority"))
     for key in ("max_tokens", "max_retries", "connect_timeout", "read_timeout", "thinking_budget_tokens"):
         if isinstance(c.get(key), str) and c[key].strip():
             try:
@@ -236,6 +242,94 @@ def normalize_config(config):
             v2 = v.strip().lower()
             c[enum_key] = v2 if v2 in allowed or v2 == "" else v
     return c
+
+
+def _parse_llm_ref(value):
+    if isinstance(value, int):
+        return value
+    text = str(value or "").strip()
+    return int(text) if text.isdigit() else text
+
+
+def normalize_priority(value):
+    if isinstance(value, bool) or value in ("", None):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return 0
+
+
+def infer_config_category(config):
+    explicit = str(config.get("category") or "").strip().lower()
+    if explicit in API_CONFIG_CATEGORIES:
+        return explicit
+    modelish = " ".join(
+        str(config.get(key) or "").lower()
+        for key in ("name", "model", "apibase")
+    )
+    if config.get("audio_capable") or any(
+        token in modelish
+        for token in ("whisper", "tts", "speech", "audio", "transcribe", "realtime")
+    ):
+        return "voice"
+    if config.get("image_capable") or any(
+        token in modelish
+        for token in ("vision", "qwen-vl", "-vl", "image-generation", "dall-e", "gpt-image")
+    ):
+        return "multimodal"
+    if any(
+        token in modelish
+        for token in ("embedding", "embed", "rerank", "search", "moderation")
+    ):
+        return "utility"
+    return "language"
+
+
+def prepare_api_configs(configs):
+    normalized = [
+        normalize_config(c)
+        for c in (configs or [])
+        if isinstance(c, dict)
+    ]
+    _resolve_mixin_members_by_name(normalized)
+    return sort_api_configs(normalized)
+
+
+def _resolve_mixin_members_by_name(configs):
+    names_by_index = {
+        i: str(c.get("name") or "").strip()
+        for i, c in enumerate(configs)
+        if str(c.get("name") or "").strip()
+    }
+    for c in configs:
+        if c.get("kind") != "mixin" or not isinstance(c.get("llm_nos"), list):
+            continue
+        resolved = []
+        for ref in c.get("llm_nos") or []:
+            parsed = _parse_llm_ref(ref)
+            if isinstance(parsed, int) and parsed in names_by_index:
+                resolved.append(names_by_index[parsed])
+            else:
+                resolved.append(parsed)
+        c["llm_nos"] = resolved
+    return configs
+
+
+def sort_api_configs(configs):
+    def key(item):
+        idx, c = item
+        category = str(c.get("category") or "language")
+        return (
+            API_CONFIG_CATEGORY_ORDER.get(category, len(API_CONFIG_CATEGORIES)),
+            -normalize_priority(c.get("priority")),
+            idx,
+        )
+
+    return [c for _idx, c in sorted(enumerate(configs or []), key=key)]
 
 
 def public_config(config):
@@ -269,7 +363,7 @@ def safe_config_var_name(kind, name):
 def _config_payload(config):
     kind = config.get("kind")
     if kind == "mixin":
-        keys = ("name", "llm_nos", "max_retries", "base_delay", "spring_back")
+        keys = ("name", "llm_nos", "category", "priority", "max_retries", "base_delay", "spring_back")
     else:
         keys = ("name", "apikey", "apibase", "model", *COMMON_OPTIONAL_FIELDS)
     return {k: config[k] for k in keys if k in config and config[k] not in ("", None, [])}

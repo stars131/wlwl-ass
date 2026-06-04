@@ -234,6 +234,27 @@ def test_stop_idempotent_when_nothing_running(monkeypatch, tmp_path):
     assert msg == "未在运行"
 
 
+def test_stop_reports_unknown_external_lock_holder(monkeypatch, tmp_path):
+    _fake_spec(monkeypatch, lock_port=19999)
+    monkeypatch.setattr(bot_manager, "_find_port_holder_pid", lambda port: None)
+    monkeypatch.setattr(bot_manager, "_port_in_use", lambda port, **k: True)
+    monkeypatch.setattr(bot_manager, "_kill_pid",
+                        lambda pid, **k: pytest.fail("unknown pid cannot be killed"))
+
+    class _FakeRegistry:
+        def get_by_label(self, label): return []
+        def unregister_label(self, label): pass
+
+    import launcher.process_registry as proc_reg
+    monkeypatch.setattr(proc_reg, "get_registry", lambda base: _FakeRegistry())
+
+    bm = bot_manager.BotManager(str(tmp_path))
+    ok, msg = bm.stop("testbot")
+    assert ok is False
+    assert "19999" in msg
+    assert "PID" in msg
+
+
 # ── restart() unblocks the orphan-from-previous-lifetime case ────────────
 
 

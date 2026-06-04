@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react';
 
 import { testApiConfig, type LlmTestResult } from '../api/apiConfigsApi';
 import { useSaveConfigs } from '../hooks/useApiConfigs';
-import type { ApiConfigEntry } from '../types';
+import {
+  API_CONFIG_CATEGORY_LABELS,
+  apiConfigCategories,
+  getApiConfigCategory,
+  type ApiConfigEntry,
+} from '../types';
 
 interface ConfigEditorProps {
   config: ApiConfigEntry | null; // null = creating
@@ -16,11 +21,31 @@ const KIND_LABELS: Record<string, string> = {
   mixin: 'Mixin（多渠道故障转移）',
 };
 
+const DEFAULT_CONFIG: ApiConfigEntry = {
+  kind: 'native_oai',
+  name: '',
+  category: 'language',
+  priority: 0,
+  apibase: '',
+  apikey: '',
+  model: '',
+};
+
+function normalizeDraft(config: ApiConfigEntry | null): ApiConfigEntry {
+  if (!config) return { ...DEFAULT_CONFIG };
+  return {
+    ...DEFAULT_CONFIG,
+    ...config,
+    category: getApiConfigCategory(config.category),
+    priority: config.priority ?? 0,
+  };
+}
+
 /** Form to create or edit a single API config; saves the whole list. */
 export function ConfigEditor({ config, allConfigs, onClose }: ConfigEditorProps): JSX.Element {
   const save = useSaveConfigs();
   const [draft, setDraft] = useState<ApiConfigEntry>(
-    config ?? { kind: 'native_oai', name: '', apibase: '', apikey: '', model: '' },
+    normalizeDraft(config),
   );
   const [apikeyDirty, setApikeyDirty] = useState<boolean>(config === null);
   const [testing, setTesting] = useState(false);
@@ -29,11 +54,11 @@ export function ConfigEditor({ config, allConfigs, onClose }: ConfigEditorProps)
   const [advancedOpen, setAdvancedOpen] = useState<boolean>(false);
 
   useEffect(() => {
-    setDraft(config ?? { kind: 'native_oai', name: '', apibase: '', apikey: '', model: '' });
+    setDraft(normalizeDraft(config));
     setApikeyDirty(config === null);
     setTestResult(null);
     setTestError(null);
-    setAdvancedOpen(
+    setAdvancedOpen(Boolean(
       config != null
         && (
           config.temperature != null
@@ -43,7 +68,7 @@ export function ConfigEditor({ config, allConfigs, onClose }: ConfigEditorProps)
           || config.max_tokens != null
           || config.api_mode
         ),
-    );
+    ));
   }, [config]);
 
   const isEditing = config !== null;
@@ -138,6 +163,37 @@ export function ConfigEditor({ config, allConfigs, onClose }: ConfigEditorProps)
             className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm disabled:opacity-50"
           />
         </Field>
+
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Category">
+            <select
+              value={getApiConfigCategory(draft.category)}
+              onChange={(e) => onChange('category', getApiConfigCategory(e.target.value))}
+              className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm"
+            >
+              {apiConfigCategories.map((category) => (
+                <option key={category} value={category}>
+                  {API_CONFIG_CATEGORY_LABELS[category]}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Priority">
+            <input
+              type="number"
+              step={1}
+              value={
+                typeof draft.priority === 'number'
+                  ? draft.priority
+                  : (draft.priority ?? 0)
+              }
+              onChange={(e) =>
+                onChange('priority', e.target.value === '' ? undefined : Number(e.target.value))
+              }
+              className="w-full rounded-md border border-border bg-background px-2 py-1 text-sm"
+            />
+          </Field>
+        </div>
 
         {draft.kind !== 'mixin' ? (
           <>

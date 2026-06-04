@@ -99,10 +99,49 @@ def _write_all(rows: list[dict[str, Any]]) -> None:
     os.replace(tmp, _PROPOSALS_PATH)
 
 
+def _normalize_revision_meta(
+    *,
+    evidence: list[str] | tuple[str, ...] | str | None = None,
+    change_type: str = "unspecified",
+    reflection: str = "",
+    execution_lapse: bool = False,
+    skill_followed: bool | None = None,
+) -> dict[str, Any]:
+    """Normalize optional audit metadata for skill-evolution proposals.
+
+    These advisory fields keep the old proposal flow intact while capturing
+    SkillEvolver-style online refinement evidence and EmbodiSkill-style
+    separation between invalid skill content and execution lapses.
+    """
+    if evidence is None:
+        evidence_items: list[str] = []
+    elif isinstance(evidence, str):
+        evidence_items = [evidence]
+    else:
+        evidence_items = [str(item) for item in evidence if str(item).strip()]
+    return {
+        "change_type": (change_type or "unspecified").strip() or "unspecified",
+        "evidence": evidence_items,
+        "reflection": reflection or "",
+        "execution_lapse": bool(execution_lapse),
+        "skill_followed": skill_followed,
+    }
+
+
 # ── public API ───────────────────────────────────────────────────────
 
 
-def propose_patch(skill_id: str, diff: str, *, reason: str = "") -> dict[str, Any]:
+def propose_patch(
+    skill_id: str,
+    diff: str,
+    *,
+    reason: str = "",
+    evidence: list[str] | tuple[str, ...] | str | None = None,
+    change_type: str = "unspecified",
+    reflection: str = "",
+    execution_lapse: bool = False,
+    skill_followed: bool | None = None,
+) -> dict[str, Any]:
     """Record a proposed patch to a skill. Returns the proposal record.
 
     Does NOT apply the diff — only logs it. ``accept(proposal_id)`` is the
@@ -111,6 +150,13 @@ def propose_patch(skill_id: str, diff: str, *, reason: str = "") -> dict[str, An
     if not skill_id or not diff:
         raise ValueError("skill_id and diff are both required")
     skill_path = _resolve_skill_path(skill_id)
+    revision_meta = _normalize_revision_meta(
+        evidence=evidence,
+        change_type=change_type,
+        reflection=reflection,
+        execution_lapse=execution_lapse,
+        skill_followed=skill_followed,
+    )
     proposal = {
         "id": _gen_id(),
         "skill_id": skill_id,
@@ -121,6 +167,7 @@ def propose_patch(skill_id: str, diff: str, *, reason: str = "") -> dict[str, An
         "proposed_at": _now_iso(),
         "decided_at": None,
         "decision_note": None,
+        "revision_meta": revision_meta,
     }
     with _lock:
         rows = _read_all()

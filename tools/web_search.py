@@ -16,7 +16,8 @@ Configuration (one-time):
     python -m launcher.config set providers.grok \\
       '{"api_key":"xai-...","base_url":"https://api.x.ai/v1",\\
         "model":"grok-4-fast-reasoning","kind":"oai"}'
-    python -m launcher.config set settings.tavily '{"api_key":"tvly-..."}'
+    python -m launcher.config set settings.tavily \
+      '{"api_key":"tvly-...","url":"https://api.tavily.com/search"}'
 """
 from __future__ import annotations
 
@@ -56,6 +57,33 @@ def _get_grok_model() -> str:
     return str(m or "").strip() or GROK_DEFAULT_MODEL
 
 
+def _get_grok_url() -> str:
+    v = (
+        os.environ.get("XAI_API_URL")
+        or os.environ.get("XAI_BASE_URL")
+        or os.environ.get("XAI_API_BASE_URL")
+        or os.environ.get("GROK_API_URL")
+        or os.environ.get("GROK_BASE_URL")
+        or os.environ.get("GROK_API_BASE_URL")
+        or ""
+    ).strip()
+    if not v:
+        try:
+            from launcher.config_store import default_store
+            cfg = (
+                default_store().get("providers.grok.url")
+                or default_store().get("providers.grok.base_url")
+                or default_store().get("providers.grok.apibase")
+            )
+        except Exception:
+            cfg = None
+        v = str(cfg or "").strip()
+    if not v:
+        return GROK_BASE
+    v = v.rstrip("/")
+    return v if v.endswith("/chat/completions") else f"{v}/chat/completions"
+
+
 def _get_tavily_key() -> str:
     v = (os.environ.get("TAVILY_API_KEY") or "").strip()
     if v:
@@ -66,6 +94,24 @@ def _get_tavily_key() -> str:
     except Exception:
         cfg = None
     return str(cfg or "").strip()
+
+
+def _get_tavily_url() -> str:
+    v = (os.environ.get("TAVILY_URL") or os.environ.get("TAVILY_BASE_URL") or "").strip()
+    if not v:
+        try:
+            from launcher.config_store import default_store
+            cfg = (
+                default_store().get("settings.tavily.url")
+                or default_store().get("settings.tavily.base_url")
+            )
+        except Exception:
+            cfg = None
+        v = str(cfg or "").strip()
+    if not v:
+        return TAVILY_URL
+    v = v.rstrip("/")
+    return v if v.endswith("/search") else f"{v}/search"
 
 
 # ── single-source workers ────────────────────────────────────────────
@@ -86,7 +132,7 @@ def _grok_live(query: str, sources: list[str], model: str, timeout: float) -> di
     }
     try:
         r = requests.post(
-            GROK_BASE,
+            _get_grok_url(),
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
             json=payload,
             timeout=timeout,
@@ -118,7 +164,7 @@ def _tavily(query: str, max_results: int, depth: str, timeout: float) -> dict[st
         "search_depth": "advanced" if depth == "advanced" else "basic",
     }
     try:
-        r = requests.post(TAVILY_URL, json=payload, timeout=timeout)
+        r = requests.post(_get_tavily_url(), json=payload, timeout=timeout)
     except requests.RequestException as exc:
         return {"error": f"tavily request failed: {type(exc).__name__}: {exc}"}
     if r.status_code != 200:

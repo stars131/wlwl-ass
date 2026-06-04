@@ -328,8 +328,37 @@ def file_patch(path: str, old_content: str, new_content: str):
         with open(path, 'r', encoding='utf-8') as f: full_text = f.read()
         if not old_content: return {"status": "error", "msg": "old_content 为空，请确认 arguments"}
         count = full_text.count(old_content)
-        if count == 0: return {"status": "error", "msg": "未找到匹配的旧文本块，建议：先用 file_read 确认当前内容，再分小段进行 patch。若多次失败则询问用户，严禁自行使用 overwrite 或代码替换。"}
-        if count > 1: return {"status": "error", "msg": f"找到 {count} 处匹配，无法确定唯一位置。请提供更长、更具体的旧文本块以确保唯一性。建议：包含上下文行来增强特征，或分小段逐个修改。"}
+        if count == 0:
+            file_lines = full_text.splitlines()
+            old_lines = old_content.splitlines() or [old_content]
+            hint = ""
+            if file_lines and len(file_lines) <= 5000 and len(old_lines) <= 80:
+                window = max(1, min(len(old_lines), len(file_lines)))
+                target = "\n".join(old_lines).strip()
+                best_ratio = 0.0
+                best_start = 0
+                best_text = ""
+                for i in range(0, len(file_lines) - window + 1):
+                    candidate = "\n".join(file_lines[i:i + window]).strip()
+                    ratio = difflib.SequenceMatcher(None, target, candidate).ratio()
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_start = i + 1
+                        best_text = candidate
+                if best_ratio >= 0.45:
+                    preview = best_text.replace("\n", " / ")[:180]
+                    hint = f" 最接近片段：行{best_start}-{best_start + window - 1}，相似度{best_ratio:.0%}，预览：{preview!r}。"
+            return {"status": "error", "msg": "未找到匹配的旧文本块。" + hint + "建议：先用 file_read 确认当前内容，再分小段进行 patch。若多次失败则询问用户，严禁自行使用 overwrite 或代码替换。"}
+        if count > 1:
+            positions = []
+            start = 0
+            for _ in range(min(count, 5)):
+                idx = full_text.find(old_content, start)
+                if idx < 0: break
+                positions.append(f"行{full_text[:idx].count(chr(10)) + 1}")
+                start = idx + 1
+            where = f"位置：{', '.join(positions)}" + (" 等" if count > len(positions) else "") + "。" if positions else ""
+            return {"status": "error", "msg": f"找到 {count} 处匹配，无法确定唯一位置。{where}请提供更长、更具体的旧文本块以确保唯一性。建议：包含上下文行来增强特征，或分小段逐个修改。"}
         updated_text = full_text.replace(old_content, new_content)
         with open(path, 'w', encoding='utf-8') as f: f.write(updated_text)
         return {"status": "success", "msg": "文件局部修改成功"}
@@ -990,6 +1019,26 @@ class WlwlAssHandler(BaseHandler):
         except Exception as e:
             return StepOutcome(f"[wechat_send error] {format_error(e)}", next_prompt="\n")
         yield f"[wechat_send] {to!r} ({len(text)} chars)\n"
+        return StepOutcome(result, next_prompt="\n")
+
+    def do_feishu_send(self, args, response):
+        '''通过飞书 OpenAPI 外发消息。飞书会话内“发给我/当前会话”优先使用此工具。'''
+        from tools.feishu import feishu_send
+        to = (args.get('to') or '').strip()
+        text = (args.get('text') or '').strip()
+        receive_id_type = (args.get('receive_id_type') or 'open_id').strip()
+        files = args.get('files')
+        if not to or not text:
+            return StepOutcome("[feishu_send error] to + text required", next_prompt="\n")
+        if receive_id_type not in {"open_id", "chat_id"}:
+            return StepOutcome("[feishu_send error] receive_id_type must be open_id or chat_id", next_prompt="\n")
+        if not isinstance(files, list):
+            files = None
+        try:
+            result = feishu_send(to, text, files=files, receive_id_type=receive_id_type)
+        except Exception as e:
+            return StepOutcome(f"[feishu_send error] {format_error(e)}", next_prompt="\n")
+        yield f"[feishu_send] {receive_id_type}:{to!r} ({len(text)} chars)\n"
         return StepOutcome(result, next_prompt="\n")
 
     def do_mcp_call(self, args, response):

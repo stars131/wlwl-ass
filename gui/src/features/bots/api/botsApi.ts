@@ -61,6 +61,13 @@ export function stopBot(key: string): Promise<BotActionResponse> {
   });
 }
 
+export function restartBot(key: string): Promise<BotActionResponse> {
+  return request(`/api/bots/${encodeURIComponent(key)}/restart`, botActionResponseSchema, {
+    method: 'POST',
+    body: {},
+  });
+}
+
 export function getBotLog(key: string): Promise<BotLog> {
   return request(`/api/bots/${encodeURIComponent(key)}/log`, botLogSchema);
 }

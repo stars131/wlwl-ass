@@ -96,17 +96,29 @@ def _pick_config(backend: str) -> dict[str, Any] | None:
     def _match_openai(c):
         return str(c.get("kind", "")) == "native_oai" and _looks_like_vision_model(str(c.get("model", "")))
 
+    def _first_match(match):
+        for c in configs:
+            if match(c) and c.get("category") == "multimodal":
+                return c
+        for c in configs:
+            if match(c) and c.get("image_capable"):
+                return c
+        for c in configs:
+            if match(c):
+                return c
+        return None
+
     if backend == "claude":
-        for c in configs:
-            if _match_claude(c):
-                return c
-        return None
+        return _first_match(_match_claude)
     if backend == "openai":
-        for c in configs:
-            if _match_openai(c):
-                return c
-        return None
+        return _first_match(_match_openai)
     # auto
+    for c in configs:
+        if c.get("category") == "multimodal" and (_match_claude(c) or _match_openai(c)):
+            return c
+    for c in configs:
+        if c.get("image_capable") and (_match_claude(c) or _match_openai(c)):
+            return c
     for c in configs:
         if _match_claude(c):
             return c

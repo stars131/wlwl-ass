@@ -15,9 +15,10 @@ export const botRowSchema = z.object({
   missing_modules: z.array(z.string()).default([]),
   running_self: z.boolean(),
   running_external: z.boolean(),
+  // Singleton lock port used by bot frontends to prevent duplicate instances.
+  lock_port: z.number().nullable().optional(),
   // PID owning the singleton lock port when running_external=true. Non-null
-  // means BotManager has *adopted* the orphan and can stop/restart it via PID
-  // even without holding the Popen handle.
+  // means the backend can adopt/stop/restart the external holder by PID.
   lock_holder_pid: z.number().nullable().optional(),
   running: z.boolean(),
   auto_start: z.boolean().default(true),

@@ -4875,6 +4875,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "log",
+ "rand",
  "serde",
  "serde_json",
  "tauri",

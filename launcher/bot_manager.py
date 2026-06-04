@@ -547,6 +547,12 @@ class BotManager:
             if holder and (proc is None or holder != proc.pid):
                 ok, msg = _kill_pid(holder, timeout=timeout)
                 messages.append(f"lock-port pid={holder}: {msg}")
+            elif not messages and _port_in_use(spec.lock_port):
+                return (
+                    False,
+                    f"单例锁端口 {spec.lock_port} 被占用，但无法识别 PID；"
+                    "请手动释放该端口后重试",
+                )
 
         # Wait briefly for the lock port to actually release so a follow-up
         # start() doesn't race the kernel's TIME_WAIT.
@@ -556,6 +562,12 @@ class BotManager:
                 if not _port_in_use(spec.lock_port):
                     break
                 time.sleep(0.1)
+            if _port_in_use(spec.lock_port):
+                return (
+                    False,
+                    f"单例锁端口 {spec.lock_port} 仍被占用；"
+                    "孤儿进程可能无法自动清理",
+                )
 
         if not messages:
             return True, "未在运行"

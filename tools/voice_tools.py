@@ -25,6 +25,17 @@ import os
 from typing import Any
 
 _AUDIO_HOST_HINTS = ("api.openai.com", "groq.com", "deepinfra.com", "azure.com", "openai")
+_AUDIO_MODEL_HINTS = ("whisper", "tts", "speech", "audio", "transcribe", "realtime")
+
+
+def _looks_audio_capable(c: dict[str, Any]) -> bool:
+    if str(c.get("kind")) != "native_oai":
+        return False
+    if c.get("audio_capable"):
+        return True
+    base_url = str(c.get("apibase") or "").lower()
+    modelish = " ".join(str(c.get(k) or "").lower() for k in ("name", "model", "apibase"))
+    return any(h in base_url for h in _AUDIO_HOST_HINTS) or any(h in modelish for h in _AUDIO_MODEL_HINTS)
 
 
 def _pick_audio_config() -> dict[str, Any] | None:
@@ -40,15 +51,19 @@ def _pick_audio_config() -> dict[str, Any] | None:
         configs = load_api_configs(base)
     except Exception:
         return None
-    # Prefer an explicit opt-in flag, then the host hint.
+    # Prefer the voice category first; load_api_configs already sorts by
+    # priority within category.
     for c in configs:
-        if c.get("audio_capable"):
+        if c.get("category") == "voice" and c.get("audio_capable"):
             return c
     for c in configs:
-        if str(c.get("kind")) != "native_oai":
-            continue
-        base_url = str(c.get("apibase") or "").lower()
-        if any(h in base_url for h in _AUDIO_HOST_HINTS):
+        if c.get("category") == "voice" and _looks_audio_capable(c):
+            return c
+    for c in configs:
+        if _looks_audio_capable(c) and c.get("audio_capable"):
+            return c
+    for c in configs:
+        if _looks_audio_capable(c):
             return c
     return None
 

@@ -21,6 +21,7 @@ export const projectSchema = z.object({
   last_error: z.string().optional(),
   llm_no: z.number().int(),
   llm_config_name: z.string().default(''),
+  llm_profile_name: z.string().default(''),
   permission_mode: z.string().optional(),
   project_root: z.string().optional(),
   use_project_context: z.boolean().optional(),
@@ -101,6 +102,8 @@ export type ChatMessages = z.infer<typeof chatMessagesSchema>;
 export const apiConfigSchema = z.object({
   kind: z.string(),
   name: z.string(),
+  category: z.string().optional(),
+  priority: z.union([z.number(), z.string()]).optional(),
   apikey: z.string().optional(),
   apibase: z.string().optional(),
   model: z.string().optional(),

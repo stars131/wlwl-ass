@@ -9,6 +9,7 @@
 //! don't leave orphan listeners on developer machines.
 
 use anyhow::{anyhow, bail, Context};
+use rand::{rngs::OsRng, RngCore};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -22,12 +23,14 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct PythonRuntime {
     child: Option<Child>,
     base: String,
+    auth_token: String,
 }
 
 impl PythonRuntime {
     pub fn start(project_root: &Path) -> anyhow::Result<Self> {
         let port = find_free_port().context("no free localhost port for api_server")?;
         let python = which_python().context("could not find a `python` interpreter on PATH")?;
+        let auth_token = generate_auth_token();
         log::info!("spawning {} -m launcher.api_server --port {port}", python.display());
 
         let mut child = Command::new(python)
@@ -38,6 +41,7 @@ impl PythonRuntime {
             .arg(port.to_string())
             .env("PYTHONUTF8", "1")
             .env("PYTHONIOENCODING", "utf-8")
+            .env("WLWL_API_AUTH_TOKEN", &auth_token)
             .current_dir(project_root)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -51,6 +55,7 @@ impl PythonRuntime {
         Ok(Self {
             child: Some(child),
             base: format!("http://127.0.0.1:{port}"),
+            auth_token,
         })
     }
 
@@ -58,9 +63,13 @@ impl PythonRuntime {
         self.base.clone()
     }
 
+    pub fn auth_token(&self) -> String {
+        self.auth_token.clone()
+    }
+
     pub fn shutdown(mut self) {
         if let Some(mut child) = self.child.take() {
-            shutdown_child(&mut child, &self.base);
+            shutdown_child(&mut child, &self.base, &self.auth_token);
         }
     }
 }
@@ -68,13 +77,13 @@ impl PythonRuntime {
 impl Drop for PythonRuntime {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            shutdown_child(&mut child, &self.base);
+            shutdown_child(&mut child, &self.base, &self.auth_token);
         }
     }
 }
 
-fn shutdown_child(child: &mut Child, base_url: &str) {
-    let _ = request_api_shutdown(base_url);
+fn shutdown_child(child: &mut Child, base_url: &str, auth_token: &str) {
+    let _ = request_api_shutdown(base_url, auth_token);
     let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
     while Instant::now() < deadline {
         match child.try_wait() {
@@ -88,7 +97,7 @@ fn shutdown_child(child: &mut Child, base_url: &str) {
     let _ = child.wait();
 }
 
-fn request_api_shutdown(base_url: &str) -> std::io::Result<()> {
+fn request_api_shutdown(base_url: &str, auth_token: &str) -> std::io::Result<()> {
     let Some(port_text) = base_url.rsplit(':').next() else {
         return Ok(());
     };
@@ -100,11 +109,11 @@ fn request_api_shutdown(base_url: &str) -> std::io::Result<()> {
         Duration::from_millis(700),
     )?;
     stream.set_read_timeout(Some(Duration::from_millis(700)))?;
-    let token = std::env::var("WLWL_API_AUTH_TOKEN").unwrap_or_default();
-    let auth = if token.trim().is_empty() {
+    let token = auth_token.trim();
+    let auth = if token.is_empty() {
         String::new()
     } else {
-        format!("Authorization: Bearer {}\r\n", token.trim())
+        format!("Authorization: Bearer {token}\r\n")
     };
     let request = format!(
         "POST /api/shutdown HTTP/1.1\r\nHost: 127.0.0.1\r\n{auth}Content-Length: 0\r\nConnection: close\r\n\r\n"
@@ -113,6 +122,16 @@ fn request_api_shutdown(base_url: &str) -> std::io::Result<()> {
     let mut sink = [0_u8; 512];
     let _ = stream.read(&mut sink);
     Ok(())
+}
+
+fn generate_auth_token() -> String {
+    let mut bytes = [0_u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
 }
 
 fn kill_process_tree(pid: u32) {

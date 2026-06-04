@@ -126,7 +126,15 @@ export function BotsPage(_props: BotsPageProps = {}): JSX.Element {
   );
 }
 
-import { useBots, useInstallBotSdk, useLlmOptions, useSetBotLlmBinding, useStartBot, useStopBot } from '../hooks/useBots';
+import {
+  useBots,
+  useInstallBotSdk,
+  useLlmOptions,
+  useRestartBot,
+  useSetBotLlmBinding,
+  useStartBot,
+  useStopBot,
+} from '../hooks/useBots';
 
 interface BotsTableProps {
   onShowLog: (key: string) => void;
@@ -141,9 +149,11 @@ function BotsTable({ onShowLog }: BotsTableProps): JSX.Element {
   const bots = useBots();
   const start = useStartBot();
   const stop = useStopBot();
+  const restart = useRestartBot();
   const install = useInstallBotSdk();
   const llmOptions = useLlmOptions();
   const setBinding = useSetBotLlmBinding();
+  const busy = start.isPending || stop.isPending || restart.isPending;
 
   return (
     <div className="flex flex-col gap-4 p-4 max-w-4xl mx-auto">
@@ -152,7 +162,7 @@ function BotsTable({ onShowLog }: BotsTableProps): JSX.Element {
         {/* footer note: literal-string wrap so the angle-bracketed CLI hint
             doesn't get parsed as JSX (HMR-nudge after the post-mykey rewrite) */}
         <p className="text-sm text-muted-foreground">
-          {'每 3 秒刷新；🟢 本 launcher / 🟢 外部进程已接管 / 🟡 孤儿无法识别 / ⚪ 已停。凭据编辑请用上方 「Bot 凭据」 卡或 `python -m launcher.config set bots.<bot>.<field> ...`。'}
+          {'每 3 秒刷新；本 launcher 进程可直接停止，外部 PID 可先接管或清理重启；端口占用但 PID 不可识别时会显示锁端口。凭据编辑请用上方 「Bot 凭据」 卡或 `python -m launcher.config set bots.<bot>.<field> ...`。'}
         </p>
       </header>
 
@@ -183,15 +193,19 @@ function BotsTable({ onShowLog }: BotsTableProps): JSX.Element {
                 cfgText = '⚠️';
                 cfgTip = '缺 SDK: ' + bot.missing_modules.join(', ');
               }
-              const adopted = bot.running_external && bot.lock_holder_pid != null;
+              const externalKnown = bot.running_external && bot.lock_holder_pid != null;
+              const externalUnknown = bot.running_external && bot.lock_holder_pid == null;
               const stateText = bot.running_self
-                ? '🟢 运行中（本 launcher）'
-                : adopted
-                  ? `🟢 运行中（已接管 pid=${bot.lock_holder_pid}）`
+                ? '运行中（本 launcher）'
+                : externalKnown
+                  ? `外部进程占用（pid=${bot.lock_holder_pid}）`
                   : bot.running_external
-                    ? '🟡 孤儿进程占端口（无法识别 PID）'
-                    : '⚪ 已停';
+                    ? `孤儿端口占用（端口 ${bot.lock_port ?? '未知'}，PID 不可识别）`
+                    : '已停';
               const startable = bot.configured && bot.sdk_installed && !bot.running;
+              const canAdopt = externalKnown && bot.configured && bot.sdk_installed;
+              const canStop = bot.running_self || externalKnown || externalUnknown;
+              const canRestart = (bot.running || externalUnknown) && bot.configured && bot.sdk_installed;
               const bindable = LLM_BINDABLE_BOTS.has(bot.key);
               // Detect a stale binding (e.g. profile renamed / config deleted)
               // so the dropdown can flag it visibly.
@@ -255,7 +269,14 @@ function BotsTable({ onShowLog }: BotsTableProps): JSX.Element {
                       <span className="text-xs text-muted-foreground">—</span>
                     )}
                   </td>
-                  <td className="py-2 px-2">{stateText}</td>
+                  <td className="py-2 px-2">
+                    <div>{stateText}</div>
+                    {externalUnknown ? (
+                      <div className="text-xs text-amber-600">
+                        后端无法定位 PID；自动清理失败时需要手动释放端口。
+                      </div>
+                    ) : null}
+                  </td>
                   <td className="py-2 px-2 text-right">
                     <div className="inline-flex gap-1">
                       {!bot.sdk_installed && bot.missing_modules.length > 0 ? (
@@ -274,19 +295,42 @@ function BotsTable({ onShowLog }: BotsTableProps): JSX.Element {
                       <button
                         type="button"
                         onClick={() => start.mutate(bot.key)}
-                        disabled={!startable || start.isPending}
+                        disabled={!startable || busy}
                         className="px-2 py-0.5 text-xs rounded border border-border hover:bg-accent disabled:opacity-40"
                       >
                         启动
                       </button>
+                      {externalKnown ? (
+                        <button
+                          type="button"
+                          onClick={() => start.mutate(bot.key)}
+                          disabled={!canAdopt || busy}
+                          className="px-2 py-0.5 text-xs rounded border border-border hover:bg-accent disabled:opacity-40"
+                          title="登记该外部 PID，后续可由本 GUI 停止或重启"
+                        >
+                          接管
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         onClick={() => stop.mutate(bot.key)}
-                        disabled={!(bot.running_self || adopted) || stop.isPending}
+                        disabled={!canStop || busy}
                         className="px-2 py-0.5 text-xs rounded border border-border hover:bg-accent disabled:opacity-40"
+                        title={externalUnknown ? '尝试释放锁端口；失败时会返回需要手动处理的端口' : undefined}
                       >
                         停止
                       </button>
+                      {bot.running || externalUnknown ? (
+                        <button
+                          type="button"
+                          onClick={() => restart.mutate(bot.key)}
+                          disabled={!canRestart || busy}
+                          className="px-2 py-0.5 text-xs rounded border border-border hover:bg-accent disabled:opacity-40"
+                          title="停止当前实例并启动一个由本 GUI 管理的新进程"
+                        >
+                          清理重启
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         onClick={() => onShowLog(bot.key)}
@@ -305,6 +349,21 @@ function BotsTable({ onShowLog }: BotsTableProps): JSX.Element {
 
       {start.isError ? (
         <p className="text-xs text-destructive">启动失败：{String(start.error)}</p>
+      ) : null}
+      {stop.isError ? (
+        <p className="text-xs text-destructive">停止失败：{String(stop.error)}</p>
+      ) : null}
+      {restart.isError ? (
+        <p className="text-xs text-destructive">清理重启失败：{String(restart.error)}</p>
+      ) : null}
+      {start.data ? (
+        <p className="text-xs text-emerald-600">{start.data.key}：{start.data.message}</p>
+      ) : null}
+      {stop.data ? (
+        <p className="text-xs text-emerald-600">{stop.data.key}：{stop.data.message}</p>
+      ) : null}
+      {restart.data ? (
+        <p className="text-xs text-emerald-600">{restart.data.key}：{restart.data.message}</p>
       ) : null}
       {install.isError ? (
         <p className="text-xs text-destructive">安装失败：{String(install.error)}</p>

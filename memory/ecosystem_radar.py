@@ -66,16 +66,33 @@ def _log(line: str) -> None:
 # ── env helpers ───────────────────────────────────────────────────────
 
 
+def _radar_setting(name: str, default: Any = "") -> Any:
+    try:
+        from launcher.config_store import default_store
+
+        return default_store().get(f"settings.radar.{name}", default)
+    except Exception:
+        return default
+
+
 def _resolve_watchlist() -> list[str]:
     env = (os.environ.get("WLWL_RADAR_WATCHLIST") or "").strip()
     if env:
         return [s.strip() for s in env.split(",") if s.strip() and "/" in s][:20]
+    cfg = _radar_setting("watchlist", "")
+    if isinstance(cfg, list):
+        return [str(s).strip() for s in cfg if str(s).strip() and "/" in str(s)][:20]
+    if cfg:
+        return [s.strip() for s in str(cfg).split(",") if s.strip() and "/" in s][:20]
     return list(DEFAULT_WATCHLIST)
 
 
 def _notify_recipient() -> str:
-    """Resolve the Feishu recipient: env > mykeys > 'owner' literal."""
+    """Resolve the Feishu recipient: env > config_store > mykeys > owner."""
     v = (os.environ.get("WLWL_RADAR_NOTIFY_TO") or "").strip()
+    if v:
+        return v
+    v = str(_radar_setting("notify_to", "") or "").strip()
     if v:
         return v
     try:
@@ -90,7 +107,11 @@ def _notify_recipient() -> str:
 
 def _quiet_hours_active() -> bool:
     """Honour ``WLWL_RADAR_QUIET_HOURS=HH-HH`` (e.g. ``22-8``)."""
-    spec = (os.environ.get("WLWL_RADAR_QUIET_HOURS") or "22-8").strip().lower()
+    spec = (
+        os.environ.get("WLWL_RADAR_QUIET_HOURS")
+        or str(_radar_setting("quiet_hours", "") or "")
+        or "22-8"
+    ).strip().lower()
     if spec in ("off", "none", "0"):
         return False
     m = re.match(r"^(\d{1,2})-(\d{1,2})$", spec)

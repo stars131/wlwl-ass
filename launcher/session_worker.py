@@ -58,35 +58,69 @@ def _emit(event: dict[str, Any]) -> None:
     _PROTOCOL_OUT.flush()
 
 
+def _runtime_context_from_project(
+    base_dir: str,
+    project: dict[str, Any],
+    resume_task_id: str | None = None,
+):
+    from agentmain import AgentRuntimeContext
+
+    return AgentRuntimeContext(
+        project_id=str(project["id"]),
+        project_name=str(project.get("name") or project["id"]),
+        project_root=str(project.get("project_root") or base_dir),
+        llm_no=int(project.get("llm_no", 0) or 0),
+        llm_config_name=str(project.get("llm_config_name") or ""),
+        llm_profile_name=str(project.get("llm_profile_name") or ""),
+        permission_mode=str(project.get("permission_mode") or DEFAULT_OPTIONS["permission_mode"]),
+        use_project_context=bool(project.get("use_project_context", True)),
+        autonomous_enabled=bool(project.get("autonomous_enabled", False)),
+        resume_task_id=resume_task_id,
+    )
+
+
 class Worker:
     def __init__(self, base_dir: str, project: dict[str, Any], resume_task_id: str | None):
-        from agentmain import AgentRuntimeContext, GeneraticAgent
+        from agentmain import GeneraticAgent
 
         self.base_dir = base_dir
         self.project = project
         self.current_cancel = threading.Event()
         self.current_assistant_id: str | None = None
-        context = AgentRuntimeContext(
-            project_id=str(project["id"]),
-            project_name=str(project.get("name") or project["id"]),
-            project_root=str(project.get("project_root") or base_dir),
-            llm_no=int(project.get("llm_no", 0) or 0),
-            llm_config_name=str(project.get("llm_config_name") or ""),
-            permission_mode=str(project.get("permission_mode") or DEFAULT_OPTIONS["permission_mode"]),
-            use_project_context=bool(project.get("use_project_context", True)),
-            autonomous_enabled=bool(project.get("autonomous_enabled", False)),
-            resume_task_id=resume_task_id,
-        )
+        context = _runtime_context_from_project(base_dir, project, resume_task_id)
         self.agent = GeneraticAgent(runtime_context=context)
         self.agent.inc_out = True
         self.thread = threading.Thread(target=self.agent.run, name="session-worker-agent", daemon=True)
         self.thread.start()
 
-    def send(self, text: str, assistant_id: str, mode: str = "chat", source: str = "gui") -> None:
+    def update_context(self, project: dict[str, Any]) -> None:
+        if not isinstance(project, dict):
+            return
+        self.project = project
+        context = _runtime_context_from_project(self.base_dir, project)
+        self.agent.runtime_context = context
+
+    def send(
+        self,
+        text: str,
+        assistant_id: str,
+        mode: str = "chat",
+        source: str = "gui",
+        history_context: str = "",
+    ) -> None:
         self.current_cancel = threading.Event()
         self.current_assistant_id = assistant_id
+        self.update_context(self.project)
         instruction = MODE_INSTRUCTIONS.get(mode, MODE_INSTRUCTIONS["chat"])
-        task_queue = self.agent.put_task(f"{FILE_HINT}\n{instruction}\n\n{text}", source=source)
+        parts = [FILE_HINT, instruction]
+        history_context = (history_context or "").strip()
+        if history_context:
+            parts.append(
+                "Same-project chat history (oldest to newest, compacted; use only as context, do not answer it again):\n"
+                f"{history_context}"
+            )
+        parts.append(f"Current user message:\n{text}")
+        task_queue = self.agent.put_task("\n\n".join(parts), source=source)
         threading.Thread(
             target=self._drain_task,
             args=(task_queue, assistant_id, self.current_cancel),
@@ -154,12 +188,18 @@ def main(argv: list[str] | None = None) -> int:
             assistant_id = str(msg.get("assistant_id") or "")
             mode = str(msg.get("mode") or "chat")
             source = str(msg.get("source") or "gui")
+            history_context = str(msg.get("history_context") or "")
             if not text or not assistant_id:
                 _emit({"event": "error", "assistant_id": assistant_id, "detail": "text and assistant_id are required"})
                 continue
-            worker.send(text, assistant_id, mode, source)
+            worker.send(text, assistant_id, mode, source, history_context)
         elif cmd == "abort":
             worker.abort()
+        elif cmd == "update_context":
+            project = msg.get("project")
+            if isinstance(project, dict):
+                worker.update_context(project)
+                _emit({"event": "log", "text": "runtime context updated"})
         elif cmd == "shutdown":
             worker.shutdown()
             return 0

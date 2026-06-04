@@ -1,8 +1,8 @@
 /**
  * Smoke tests for ApiPicker. Renders the component with mocked TanStack
  * Query state and verifies that:
- *   1. The dropdown renders the configs visible in the active profile.
- *   2. Selecting a config triggers setProjectLlm with the chosen name.
+ *   1. The dropdown renders profiles plus configs.
+ *   2. Selecting a profile/config triggers setProjectLlm with the matching payload.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -20,6 +20,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
     description: '',
     llm_no: 0,
     llm_config_name: '',
+    llm_profile_name: '',
     running: false,
     ...overrides,
   };
@@ -47,49 +48,57 @@ describe('ApiPicker', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders configs filtered by active profile and saves on change', async () => {
+  it('renders profiles and saves profile bindings on change', async () => {
     vi.spyOn(api, 'listApiConfigs').mockResolvedValue([
-      { kind: 'native_oai', name: 'gpt-native', model: 'gpt-5' },
-      { kind: 'native_claude', name: 'claude-relay-1', model: 'claude-opus-4-7' },
-      { kind: 'native_claude', name: 'claude-relay-2', model: 'claude-opus-4-7' },
+      { kind: 'native_oai', name: 'gpt-native', model: 'gpt-5', category: 'language', priority: 1 },
+      { kind: 'native_claude', name: 'claude-relay-1', model: 'claude-opus-4-7', category: 'language', priority: 3 },
+      { kind: 'native_claude', name: 'voice-relay', model: 'tts', category: 'voice', priority: 100 },
     ]);
     vi.spyOn(api, 'getProfiles').mockResolvedValue({
       active: 'claude-only',
-      profiles: { 'claude-only': ['claude-relay-1', 'claude-relay-2'] },
+      profiles: { 'claude-only': ['voice-relay', 'gpt-native', 'claude-relay-1'] },
     });
     const setSpy = vi
       .spyOn(api, 'setProjectLlm')
-      .mockResolvedValue(makeProject({ llm_config_name: 'claude-relay-2' }));
+      .mockResolvedValue(makeProject({ llm_profile_name: 'claude-only' }));
 
     renderPicker(makeProject());
 
-    // After hooks resolve, only the two profile-member configs render
     await waitFor(() => {
-      expect(screen.getByRole('option', { name: /claude-relay-1/ })).toBeInTheDocument();
-      expect(screen.getByRole('option', { name: /claude-relay-2/ })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: /Profile: claude-only/ })).toBeInTheDocument();
     });
-    expect(screen.queryByRole('option', { name: /gpt-native/ })).toBeNull();
+    expect(
+      screen.getByRole('option', {
+        name: /claude-relay-1\(P3\).*gpt-native\(P1\).*voice-relay\(P100\)/,
+      }),
+    ).toBeInTheDocument();
 
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'claude-relay-2' } });
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'profile:claude-only' } });
 
     await waitFor(() => {
-      expect(setSpy).toHaveBeenCalledWith('p_x', { config_name: 'claude-relay-2' });
+      expect(setSpy).toHaveBeenCalledWith('p_x', { profile_name: 'claude-only' });
     });
   });
 
-  it('shows all configs when no profile is active', async () => {
+  it('saves config bindings on change', async () => {
     vi.spyOn(api, 'listApiConfigs').mockResolvedValue([
       { kind: 'native_oai', name: 'gpt-native' },
       { kind: 'native_claude', name: 'claude-relay-1' },
     ]);
     vi.spyOn(api, 'getProfiles').mockResolvedValue({ active: null, profiles: {} });
-    vi.spyOn(api, 'setProjectLlm').mockResolvedValue(makeProject());
+    const setSpy = vi.spyOn(api, 'setProjectLlm').mockResolvedValue(makeProject());
 
     renderPicker(makeProject());
 
     await waitFor(() => {
       expect(screen.getByRole('option', { name: /gpt-native/ })).toBeInTheDocument();
       expect(screen.getByRole('option', { name: /claude-relay-1/ })).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'config:gpt-native' } });
+
+    await waitFor(() => {
+      expect(setSpy).toHaveBeenCalledWith('p_x', { config_name: 'gpt-native' });
     });
   });
 });

@@ -75,6 +75,7 @@ class AgentRuntimeContext:
     project_root: str = ''
     llm_no: int = 0
     llm_config_name: str = ''
+    llm_profile_name: str = ''
     permission_mode: str = 'auto'
     use_project_context: bool = True
     autonomous_enabled: bool = False
@@ -122,10 +123,53 @@ class GeneraticAgent:
         if runtime_context is not None:
             self.apply_runtime_context(runtime_context)
 
+    def _resolve_runtime_profile_names(self, profile_name):
+        name = str(profile_name or '').strip()
+        if not name:
+            return []
+        project_root = (
+            str(getattr(self.runtime_context, 'project_root', '') or '').strip()
+            if self.runtime_context else ''
+        ) or script_dir
+        try:
+            from launcher.api_config import list_api_configs
+            from launcher.llm_binding import resolve_to_config_names_by_priority
+            from launcher.profiles import load_profiles
+            profiles = load_profiles(project_root)
+            configs = list_api_configs(project_root)
+            return resolve_to_config_names_by_priority('profile', name, profiles, configs)
+        except Exception as exc:
+            print(f"[GeneraticAgent] profile {name!r} resolve failed: {exc}")
+            return []
+
+    def _inject_runtime_profile_mixin(self, mykeys):
+        profile_name = str(getattr(self.runtime_context, 'llm_profile_name', '') or '').strip()
+        names = self._resolve_runtime_profile_names(profile_name)
+        if not names:
+            return '', ''
+        try:
+            from launcher.llm_binding import synthesize_mixin_entry
+            mykeys_key, mixin_cfg = synthesize_mixin_entry(f"session_{profile_name}", names)
+        except Exception as exc:
+            print(f"[GeneraticAgent] profile {profile_name!r} mixin build failed: {exc}")
+            return '', ''
+        mykeys[mykeys_key] = mixin_cfg
+        return str(mixin_cfg.get('name') or ''), "|".join(names)
+
     def load_llm_sessions(self):
         project_root = getattr(self.runtime_context, 'project_root', None) if self.runtime_context else None
         mykeys, changed = reload_mykeys(project_root=project_root)
-        if not changed and hasattr(self, 'llmclients'): return
+        # Runtime profile bindings synthesize a temporary mixin entry. Copy the
+        # cached mykeys dict first so session-only mixins never leak into
+        # llmcore's module-level credential cache.
+        mykeys = dict(mykeys)
+        profile_target_name, profile_signature = self._inject_runtime_profile_mixin(mykeys)
+        if (
+            not changed
+            and hasattr(self, 'llmclients')
+            and profile_signature == getattr(self, '_runtime_profile_signature', '')
+        ):
+            return
         try: oldhistory = self.llmclient.backend.history
         except (AttributeError, TypeError): oldhistory = None
         llm_sessions = []
@@ -146,6 +190,8 @@ class GeneraticAgent:
                     else: llm_sessions[i] = ToolClient(mixin)
                 except Exception as e: print(f'[WARN] Failed to init MixinSession with cfg {s["mixin_cfg"]}: {e}')
         self.llmclients = llm_sessions
+        self._runtime_profile_target_name = profile_target_name or ''
+        self._runtime_profile_signature = profile_signature or ''
         self.llmclient = self.llmclients[self.llm_no%len(self.llmclients)]
         if oldhistory: self.llmclient.backend.history = oldhistory
 
@@ -186,8 +232,13 @@ class GeneraticAgent:
         self.load_llm_sessions()
         return [(i, self.get_llm_name(b), i == self.llm_no) for i, b in enumerate(self.llmclients)]
     def apply_runtime_context(self, ctx):
-        llm_name = str(getattr(ctx, 'llm_config_name', '') or '').strip()
-        if llm_name:
+        profile_name = str(getattr(ctx, 'llm_profile_name', '') or '').strip()
+        if profile_name:
+            self.load_llm_sessions()
+            selected = self.select_llm_by_name(getattr(self, '_runtime_profile_target_name', ''))
+            if not selected:
+                self.next_llm(int(getattr(ctx, 'llm_no', 0) or 0))
+        elif (llm_name := str(getattr(ctx, 'llm_config_name', '') or '').strip()):
             selected = self.select_llm_by_name(llm_name)
             if not selected:
                 self.next_llm(int(getattr(ctx, 'llm_no', 0) or 0))
@@ -252,6 +303,8 @@ class GeneraticAgent:
             raw_query = self._handle_slash_cmd(raw_query, display_queue)
             if raw_query is None:
                 self.task_queue.task_done(); continue
+            if self.runtime_context is not None:
+                self.apply_runtime_context(self.runtime_context)
             self.is_running = True
             rquery = smart_format(raw_query.replace('\n', ' '), max_str_len=200)
             self.history.append(f"[USER]: {rquery}")
@@ -375,7 +428,7 @@ if __name__ == '__main__':
     from datetime import datetime
     parser = argparse.ArgumentParser(
         description='Internal agent entry: headless --task / --reflect / --bg modes only. '
-                    'For interactive use, launch the GUI via start_from_zero.cmd or `python launch.pyw`.'
+                    'For interactive use, launch the Web UI via start_from_zero.cmd or `python launch.pyw`.'
     )
     parser.add_argument('--task', metavar='IODIR', help='一次性任务模式(文件IO)')
     parser.add_argument('--reflect', metavar='SCRIPT', help='反射模式：加载监控脚本，check()触发时发任务')
@@ -386,7 +439,7 @@ if __name__ == '__main__':
 
     if not (args.task or args.reflect or args.bg):
         print('agentmain.py is now an internal entry. Use start_from_zero.cmd '
-              'or `python launch.pyw` to start the Tauri GUI. Headless modes: '
+              'or `python launch.pyw` to start the browser Web UI. Headless modes: '
               '--task / --reflect / --bg.', file=sys.stderr)
         sys.exit(2)
 

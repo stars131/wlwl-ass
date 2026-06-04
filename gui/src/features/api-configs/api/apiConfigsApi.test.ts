@@ -25,19 +25,25 @@ function jsonResponse(body: unknown, status = 200): Response {
 describe('apiConfigsApi', () => {
   it('listConfigs parses', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
-      jsonResponse({ configs: [{ kind: 'native_oai', name: 'gpt' }] }),
+      jsonResponse({
+        configs: [{ kind: 'native_oai', name: 'gpt', category: 'language', priority: 3 }],
+      }),
     );
     const data = await api.listConfigs();
     expect(data.configs[0]!.name).toBe('gpt');
+    expect(data.configs[0]!.category).toBe('language');
+    expect(data.configs[0]!.priority).toBe(3);
   });
 
   it('saveConfigs PUT', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ configs: [] }));
     globalThis.fetch = fetchMock;
-    await api.saveConfigs([{ kind: 'native_oai', name: 'x' }]);
+    await api.saveConfigs([{ kind: 'native_oai', name: 'x', category: 'voice', priority: 8 }]);
     expect(fetchMock.mock.calls[0]![1].method).toBe('PUT');
     const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
     expect(body.configs[0].name).toBe('x');
+    expect(body.configs[0].category).toBe('voice');
+    expect(body.configs[0].priority).toBe(8);
   });
 
   it('setActiveProfile null clears active', async () => {

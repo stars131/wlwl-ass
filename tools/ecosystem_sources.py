@@ -64,6 +64,7 @@ class RawItem:
 # Gemini CLI, Lark/Feishu CLI) plus high-signal sibling projects. Override
 # via ``WLWL_RADAR_WATCHLIST=owner/repo,owner/repo,...``.
 DEFAULT_WATCHLIST: tuple[str, ...] = (
+    "lsdefine/GenericAgent",  # upstream — track own origin
     "openai/codex",
     "anthropics/claude-code",
     "google-gemini/gemini-cli",

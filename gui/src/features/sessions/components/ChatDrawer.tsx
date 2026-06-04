@@ -25,14 +25,16 @@ export function ChatDrawer({ project, onClose }: ChatDrawerProps): JSX.Element {
   const [mode, setMode] = useState<RequestMode>('auto');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [aborting, setAborting] = useState(false);
+  const [runtimeRunning, setRuntimeRunning] = useState(Boolean(project.running));
   const [error, setError] = useState<string | null>(null);
   const [canvasOpen, setCanvasOpen] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
 
   const hasRunningReply = useMemo(
-    () => messages.some((m) => m.role === 'assistant' && m.status === 'running'),
-    [messages],
+    () => runtimeRunning && messages.some((m) => m.role === 'assistant' && m.status === 'running'),
+    [messages, runtimeRunning],
   );
 
   const artifacts = useMemo(
@@ -48,6 +50,7 @@ export function ChatDrawer({ project, onClose }: ChatDrawerProps): JSX.Element {
     try {
       const data = await listProjectMessages(project.id);
       setMessages(data.messages);
+      if (typeof data.running === 'boolean') setRuntimeRunning(data.running);
       setError(null);
     } catch (err) {
       setError(String(err));
@@ -57,13 +60,17 @@ export function ChatDrawer({ project, onClose }: ChatDrawerProps): JSX.Element {
   }, [project.id]);
 
   useEffect(() => {
+    setRuntimeRunning(Boolean(project.running));
     setLoading(true);
     void refresh();
+  }, [project.id, project.running, refresh]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => {
       void refresh();
     }, hasRunningReply ? 800 : 2000);
     return () => window.clearInterval(timer);
-  }, [project.id, hasRunningReply, refresh]);
+  }, [hasRunningReply, refresh]);
 
   useEffect(() => {
     const el = scrollerRef.current;
@@ -85,12 +92,13 @@ export function ChatDrawer({ project, onClose }: ChatDrawerProps): JSX.Element {
   const onSend = async (e: React.FormEvent) => {
     e.preventDefault();
     const text = input.trim();
-    if (!text || sending || !project.running || hasRunningReply) return;
+    if (!text || sending || hasRunningReply) return;
     setSending(true);
     setError(null);
     try {
       const data = await sendProjectMessage(project.id, text, mode);
       setMessages(data.messages);
+      if (typeof data.running === 'boolean') setRuntimeRunning(data.running);
       setInput('');
     } catch (err) {
       setError(String(err));
@@ -100,12 +108,17 @@ export function ChatDrawer({ project, onClose }: ChatDrawerProps): JSX.Element {
   };
 
   const onAbort = async () => {
+    if (aborting || !hasRunningReply) return;
+    setAborting(true);
     setError(null);
     try {
       const data = await abortProjectMessage(project.id);
       setMessages(data.messages);
+      if (typeof data.running === 'boolean') setRuntimeRunning(data.running);
     } catch (err) {
       setError(String(err));
+    } finally {
+      setAborting(false);
     }
   };
 
@@ -119,7 +132,7 @@ export function ChatDrawer({ project, onClose }: ChatDrawerProps): JSX.Element {
           <div className="min-w-0">
             <h3 className="truncate font-medium">对话：{project.name}</h3>
             <p className="truncate text-xs text-muted-foreground">
-              {project.running ? '运行中' : '已停止'} · id={project.id}
+              {runtimeRunning ? '运行中' : '已停止'} · id={project.id}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -143,9 +156,10 @@ export function ChatDrawer({ project, onClose }: ChatDrawerProps): JSX.Element {
               <button
                 type="button"
                 onClick={() => void onAbort()}
-                className="rounded border border-destructive/40 px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+                disabled={aborting}
+                className="rounded border border-destructive/40 px-2 py-1 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
               >
-                停止
+                {aborting ? '停止中' : '停止'}
               </button>
             ) : null}
             <button
@@ -182,12 +196,7 @@ export function ChatDrawer({ project, onClose }: ChatDrawerProps): JSX.Element {
               </div>
             </div>
 
-            {!project.running ? (
-              <div className="border-t border-border px-3 py-2 text-sm text-muted-foreground">
-                会话已停止。先在列表里启动后再发送消息。
-              </div>
-            ) : (
-              <form onSubmit={(e) => void onSend(e)} className="border-t border-border p-3">
+            <form onSubmit={(e) => void onSend(e)} className="border-t border-border p-3">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex overflow-hidden rounded-md border border-border text-xs">
                     {MODE_OPTIONS.map((entry) => (
@@ -231,8 +240,7 @@ export function ChatDrawer({ project, onClose }: ChatDrawerProps): JSX.Element {
                     {sending ? '发送中' : '发送'}
                   </button>
                 </div>
-              </form>
-            )}
+            </form>
           </div>
 
           {canvasOpen && selectedArtifact ? (

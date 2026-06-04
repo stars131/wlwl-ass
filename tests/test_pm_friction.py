@@ -38,6 +38,15 @@ def _today() -> str:
     return _dt.datetime.now().strftime("%Y-%m-%d")
 
 
+def _recent_days(count: int) -> list[str]:
+    today = _dt.datetime.now().date()
+    start = today - _dt.timedelta(days=max(0, count - 1))
+    return [
+        (start + _dt.timedelta(days=i)).strftime("%Y-%m-%d")
+        for i in range(count)
+    ]
+
+
 # ── Signal extraction ─────────────────────────────────────────────────
 
 
@@ -154,7 +163,7 @@ def test_provenance_gate_passes_when_three_runs_show_same_pattern(tmp_activity):
 
     # Three independent runs on three different days, each with a retry burst
     # on file_patch.
-    for i, day in enumerate(["2026-05-10", "2026-05-11", "2026-05-12"]):
+    for day in _recent_days(3):
         events = []
         for j in range(3):
             events.append({"ts": f"{day}T00:00:0{j}Z", "phase": "tool_start", "turn": 1, "tool": "file_patch"})
@@ -175,7 +184,7 @@ def test_scan_returns_full_structure(tmp_activity):
     from tools import pm_friction_miner
 
     # Quick smoke: build minimal evidence, call scan(), assert shape.
-    for day in ["2026-05-10", "2026-05-11", "2026-05-12"]:
+    for day in _recent_days(3):
         _write_day(tmp_activity, day, [
             *[{"ts": f"{day}T00:00:0{j}Z", "phase": "tool_start", "turn": 1, "tool": "x"} for j in range(3)],
             {"ts": f"{day}T00:01:00Z", "phase": "turn_end", "turn": 1},

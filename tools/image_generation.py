@@ -38,7 +38,16 @@ def _pick_image_config() -> dict[str, Any] | None:
     except Exception:
         return None
     for c in configs:
+        if c.get("category") == "multimodal" and c.get("image_capable"):
+            return c
+    for c in configs:
         if c.get("image_capable"):
+            return c
+    for c in configs:
+        if c.get("category") != "multimodal" or str(c.get("kind")) != "native_oai":
+            continue
+        base_url = str(c.get("apibase") or "").lower()
+        if any(h in base_url for h in _IMAGE_HOST_HINTS):
             return c
     for c in configs:
         if str(c.get("kind")) != "native_oai":

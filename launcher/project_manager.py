@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import contextlib
 import os
 import random
 import secrets
@@ -64,6 +65,7 @@ class ProjectManager:
         project.setdefault("updated_at", project.get("last_active") or now)
         project.setdefault("llm_no", int(DEFAULT_OPTIONS["llm_no"]))
         project.setdefault("llm_config_name", "")
+        project.setdefault("llm_profile_name", "")
         project.setdefault("permission_mode", DEFAULT_OPTIONS["permission_mode"])
         project.setdefault("project_root", DEFAULT_OPTIONS["project_root"])
         project.setdefault("use_project_context", DEFAULT_OPTIONS["use_project_context"])
@@ -146,6 +148,7 @@ class ProjectManager:
                 "updated_at": now,
                 "llm_no": opts["llm_no"],
                 "llm_config_name": "",
+                "llm_profile_name": "",
                 "permission_mode": opts["permission_mode"],
                 "project_root": opts["project_root"],
                 "use_project_context": opts["use_project_context"],
@@ -162,14 +165,23 @@ class ProjectManager:
             self.start(project["id"])
         return project
 
-    def set_llm(self, project_id: str, *, config_name=None, llm_no=None) -> dict | None:
-        """Update per-session LLM selection. Either config_name OR llm_no."""
+    def set_llm(self, project_id: str, *, config_name=None, profile_name=None, llm_no=None) -> dict | None:
+        """Update per-session LLM selection.
+
+        A session can pin one config, bind to one profile, or fall back to
+        ``llm_no``. Config/profile writes clear the other name field so the UI
+        and runtime cannot disagree about the active binding.
+        """
         with self.lock:
             project = self._by_id(project_id)
             if not project:
                 return None
             if config_name is not None:
                 project["llm_config_name"] = str(config_name).strip()
+                project["llm_profile_name"] = ""
+            if profile_name is not None:
+                project["llm_profile_name"] = str(profile_name).strip()
+                project["llm_config_name"] = ""
             if llm_no is not None:
                 try:
                     project["llm_no"] = max(0, int(llm_no))
@@ -177,7 +189,11 @@ class ProjectManager:
                     pass
             self._touch_project(project)
             self._save()
-            return dict(project)
+            updated = dict(project)
+        runtime = self.session(project_id)
+        if runtime and hasattr(runtime, "update_project"):
+            runtime.update_project(updated)
+        return updated
 
     def update_options(self, project_id: str, options: dict) -> bool:
         opts = project_options(options)
@@ -188,6 +204,10 @@ class ProjectManager:
             project.update(opts)
             self._touch_project(project)
             self._save()
+            updated = dict(project)
+        runtime = self.session(project_id)
+        if runtime and hasattr(runtime, "update_project"):
+            runtime.update_project(updated)
         return True
 
     def set_autonomous(self, project_id: str, enabled: bool) -> dict | None:
@@ -200,6 +220,8 @@ class ProjectManager:
             self._save()
         runtime = self.session(project_id)
         if runtime:
+            if hasattr(runtime, "update_project"):
+                runtime.update_project(dict(project))
             runtime.set_autonomous(bool(enabled), trigger_now=True)
         return self.get(project_id)
 
@@ -272,6 +294,27 @@ class ProjectManager:
                 self._touch_project(project)
                 self._save()
         return True
+
+    def abort_current_message(self, project_id: str):
+        with self.lock:
+            project = self._by_id(project_id)
+            if not project:
+                return None
+        runtime = self.session(project_id)
+        if not runtime:
+            return None
+        restart_needed = False
+        try:
+            restart_needed = bool(runtime.abort_current())
+        except Exception as exc:
+            print(f"[ProjectManager] abort current message {project_id} error: {exc}")
+            with contextlib.suppress(Exception):
+                restart_needed = not runtime.is_alive()
+        if restart_needed or not runtime.is_alive():
+            self.start(project_id)
+            runtime = self.session(project_id)
+        self.touch(project_id)
+        return runtime
 
     def session(self, project_id: str):
         return self._sessions.get(project_id)

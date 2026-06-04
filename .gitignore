@@ -119,6 +119,8 @@ memory/L4_raw_sessions/*
 !memory/image_gen_sop.md
 !memory/moa_sop.md
 !memory/process_sop.md
+!memory/research_report_template.md
+!memory/research_sop.md
 !memory/skill_propose_sop.md
 !memory/skill_self_improve.py
 !memory/subagent.md

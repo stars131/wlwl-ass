@@ -129,6 +129,16 @@
       "required": ["to", "text"]}}
   },
   {"type": "function", "function": {
+    "name": "feishu_send",
+    "description": "通过已配置的飞书机器人 OpenAPI 给飞书用户或群会话发消息。用于飞书来源请求，例如“发给我”“通知当前飞书群”“定时发到飞书”。仅单向外发，副作用真实不可撤销。飞书会话内默认使用当前会话上下文中的 receive_id 和 receive_id_type，除非用户明确指定其他目标。",
+    "parameters": {"type": "object", "properties": {
+      "to": {"type": "string", "description": "飞书 open_id（ou_xxx）、chat_id（oc_xxx）或已缓存的显示名。群/当前会话使用 chat_id 时 receive_id_type 填 chat_id。"},
+      "receive_id_type": {"type": "string", "enum": ["open_id", "chat_id"], "description": "飞书 receive_id_type。发给个人用 open_id，发给当前群/会话用 chat_id。", "default": "open_id"},
+      "text": {"type": "string", "description": "纯文本消息内容。"},
+      "files": {"type": "array", "items": {"type": "string"}, "description": "可选本地文件路径列表，文本发送后作为飞书附件上传。"}},
+      "required": ["to", "text"]}}
+  },
+  {"type": "function", "function": {
     "name": "mcp_call",
     "description": "**单工具入口**，统一访问用户已配置的所有 MCP（Model Context Protocol）外部服务（文件系统/GitHub/数据库/自定义内部工具等），GA 不为每个 MCP 工具单独开原子工具。三种用法：(1) 不带参数调用 → 列出所有已配置的 server；(2) 只填 server → 列出该 server 的工具清单；(3) 同时填 server/tool/arguments → 实际调用。调用前必须先发现——server 工具名和 schema 由用户控制、事先不可知。返回明文",
     "parameters": {"type": "object", "properties": {

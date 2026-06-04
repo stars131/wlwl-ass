@@ -3,10 +3,11 @@ from datetime import datetime, timedelta
 
 # 端口锁：防止重复启动，bind失败时agentmain会直接崩溃退出
 # reload时mod.__dict__保留_lock，跳过重复绑定
-try: _lock
-except NameError:
-    _lock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
-    _lock.bind(('127.0.0.1', 45762)); _lock.listen(1)
+if os.environ.get('WLWL_SCHEDULER_NO_LOCK') != '1':
+    try: _lock
+    except NameError:
+        _lock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        _lock.bind(('127.0.0.1', 45762)); _lock.listen(1)
 
 INTERVAL = 120
 ONCE = False
@@ -59,6 +60,42 @@ def _last_run(tid, done_files):
         except: continue
     return latest
 
+def _write_report(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8', newline='\n') as fp:
+        fp.write(text)
+
+def _handle_direct_action(task, tid, rpt):
+    """Run scheduler actions that do not need the generic agent loop."""
+    action = str(task.get('action') or '').strip()
+    if action != 'feishu_send':
+        return False
+    to = str(task.get('to') or '').strip()
+    text = str(task.get('text') or '').strip()
+    receive_id_type = str(task.get('receive_id_type') or 'open_id').strip()
+    files = task.get('files')
+    if not isinstance(files, list):
+        files = None
+    try:
+        import sys
+        root = os.path.abspath(os.path.join(_dir, '..'))
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from tools.feishu import feishu_send
+        result = feishu_send(to, text, files=files, receive_id_type=receive_id_type)
+    except Exception as exc:
+        result = f'[feishu_send error] {type(exc).__name__}: {exc}'
+    _logger.info(f'DIRECT {tid}: action=feishu_send result={result}')
+    _write_report(
+        rpt,
+        f'[定时任务] {tid}\n'
+        f'[动作] feishu_send\n'
+        f'[接收类型] {receive_id_type}\n'
+        f'[接收目标] {to}\n'
+        f'[结果] {result}\n',
+    )
+    return True
+
 def check():
     # L4 archive cron (silent, every 12h)
     global _l4_t
@@ -95,6 +132,19 @@ def check():
         except Exception as e:
             _logger.error(f'Invalid schedule format in {f}: {sched!r} ({e})')
             continue
+
+        due_date = str(task.get('date') or '').strip()
+        if due_date:
+            try:
+                due = datetime.strptime(due_date, '%Y-%m-%d').date()
+            except Exception as e:
+                _logger.error(f'Invalid date in {f}: {due_date!r} ({e})')
+                continue
+            if now.date() < due:
+                continue
+            if now.date() > due:
+                _logger.info(f'SKIP {tid}: date {due_date} has passed')
+                continue
         
         # weekday任务：周末跳过
         if repeat == 'weekday' and now.weekday() >= 5: continue
@@ -121,6 +171,8 @@ def check():
                      f'last_run={last})')
         ts = now.strftime('%Y-%m-%d_%H%M')
         rpt = os.path.join(DONE, f'{ts}_{tid}.md')
+        if _handle_direct_action(task, tid, rpt):
+            continue
         prompt = task.get('prompt', '')
         return (f'[定时任务] {tid}\n'
                 f'[报告路径] {rpt}\n\n'

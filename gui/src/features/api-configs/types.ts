@@ -6,9 +6,27 @@ import { z } from 'zod';
 export const configKindSchema = z.enum(['native_oai', 'native_claude', 'mixin']);
 export type ConfigKind = z.infer<typeof configKindSchema>;
 
+export const apiConfigCategories = ['language', 'multimodal', 'voice', 'utility'] as const;
+export const apiConfigCategorySchema = z.enum(apiConfigCategories);
+export type ApiConfigCategory = z.infer<typeof apiConfigCategorySchema>;
+
+export const API_CONFIG_CATEGORY_LABELS: Record<ApiConfigCategory, string> = {
+  language: '语言模型',
+  multimodal: '多模态',
+  voice: '语音',
+  utility: '工具/其他',
+};
+
+export function getApiConfigCategory(value: unknown): ApiConfigCategory {
+  const parsed = apiConfigCategorySchema.safeParse(value);
+  return parsed.success ? parsed.data : 'language';
+}
+
 export const apiConfigEntrySchema = z.object({
   kind: z.string(),
   name: z.string(),
+  category: apiConfigCategorySchema.optional(),
+  priority: z.union([z.number(), z.string()]).optional(),
   apikey: z.string().optional(),
   apibase: z.string().optional(),
   model: z.string().optional(),
